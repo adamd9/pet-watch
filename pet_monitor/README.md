@@ -156,6 +156,43 @@ A Python-based pet monitoring application that uses a USB camera and microphone 
    - Local access: `http://localhost:5000`
    - Remote access: `http://<raspberry-pi-ip>:5000`
 
+## Running the Application
+
+### Starting the Application
+```bash
+# Activate virtual environment
+source venv/bin/activate
+
+# Run the application
+python pet_monitor.py > pet_monitor.log 2>&1 & tail -f pet_monitor.log
+```
+
+### Stopping the Application
+
+```bash
+# One-line command to kill all instances (safe kill, then force kill if needed)
+(kill $(pgrep -f "python.*pet_monitor.py") 2>/dev/null || true) && sleep 1 && (kill -9 $(pgrep -f "python.*pet_monitor.py") 2>/dev/null || true)
+```
+
+The above command will:
+1. Try to gracefully kill all pet_monitor.py processes
+2. Wait 1 second for them to clean up
+3. Force kill any remaining processes
+4. Suppress any error messages if no processes are found
+5. Always return success (won't break scripts)
+
+For debugging, you can also:
+```bash
+# List all running instances
+ps aux | grep "[p]ython.*pet_monitor.py"
+
+# Check what's using port 5000
+lsof -i :5000
+
+# On macOS, you might need to disable AirPlay Receiver:
+# System Settings -> AirDrop & Handoff -> AirPlay Receiver -> Off
+```
+
 ### Configuration Tips
 
 1. **Automatic startup**
@@ -196,8 +233,40 @@ A Python-based pet monitoring application that uses a USB camera and microphone 
      - Notification Cooldown: 5 seconds
 
 3. **Bark Detection**
-   - Currently uses a placeholder model
-   - To improve accuracy, collect audio samples and train the model
+   - The application uses an adaptive audio analysis approach to detect dog barks:
+
+1. **Audio Processing**
+   - Records continuous audio in chunks (1-second duration)
+   - Analyzes both RMS (average) and peak amplitudes
+   - Applies scaling to handle varying microphone input levels
+   - Maintains a rolling buffer of recent audio for context
+
+2. **Detection Parameters**
+   - **Sensitivity** (0-100): Controls detection aggressiveness
+     - Higher values make detection more sensitive to quiet sounds
+     - Also affects the required duration of the sound
+   - **Duration** (ms): Minimum time the sound must exceed threshold
+     - Automatically adjusted based on sensitivity
+     - Higher sensitivity reduces required duration
+   - **Threshold** (0-100): Minimum amplitude to trigger detection
+     - Applied to scaled audio values
+     - Lower values detect quieter sounds
+   - **Cooldown** (seconds): Minimum time between detections
+     - Prevents rapid duplicate notifications
+
+3. **Detection Algorithm**
+   - Scales raw audio input to handle low microphone levels
+   - Calculates both RMS and peak amplitudes for robust detection
+   - Requires sufficient samples above threshold within the duration window
+   - Adapts duration requirement based on sensitivity setting
+   - Saves audio clips when barks are detected for review
+
+4. **Tuning Tips**
+   - Start with moderate settings: sensitivity=80, duration=50, threshold=5
+   - Increase sensitivity if barks aren't detected
+   - Decrease threshold if sounds are too quiet
+   - Adjust duration if detections are too quick/slow
+   - Check system input volume if detection is poor
 
 ### Troubleshooting
 

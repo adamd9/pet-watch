@@ -77,6 +77,10 @@
             margin-bottom: 5px;
             background-color: #f8f8f8;
             border-left: 4px solid #4CAF50;
+            cursor: pointer;
+        }
+        .notification:hover {
+            background-color: rgba(0,0,0,0.05);
         }
         .notification-controls {
             display: flex;
@@ -137,6 +141,50 @@
             content: '✗';
             color: #f44336;
             margin-right: 5px;
+        }
+        
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.7);
+        }
+        
+        .modal-content {
+            background-color: #fefefe;
+            margin: 15% auto;
+            padding: 20px;
+            border: 1px solid #888;
+            width: 70%;
+            max-width: 800px;
+            border-radius: 8px;
+        }
+        
+        .close-modal {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        
+        .close-modal:hover {
+            color: black;
+        }
+        
+        .media-link {
+            color: #007bff;
+            text-decoration: underline;
+            margin-left: 10px;
+            cursor: pointer;
+        }
+        
+        .media-link:hover {
+            color: #0056b3;
         }
     </style>
 </head>
@@ -227,6 +275,22 @@
                 </div>
             </div>
             <div id="notificationList"></div>
+        </div>
+    </div>
+
+    <!-- Add modal for media playback -->
+    <div id="mediaModal" class="modal">
+        <div class="modal-content">
+            <span class="close-modal">&times;</span>
+            <h3 id="modalTitle"></h3>
+            <div id="modalContent">
+                <video id="detectionVideo" controls style="width: 100%; display: none;">
+                    Your browser does not support the video tag.
+                </video>
+                <audio id="detectionAudio" controls style="width: 100%; display: none;">
+                    Your browser does not support the audio tag.
+                </audio>
+            </div>
         </div>
     </div>
 
@@ -446,11 +510,108 @@
             };
         });
 
+        // Modal handling
+        const modal = document.getElementById('mediaModal');
+        const modalVideo = document.getElementById('detectionVideo');
+        const modalAudio = document.getElementById('detectionAudio');
+        const modalTitle = document.getElementById('modalTitle');
+        const closeModal = document.querySelector('.close-modal');
+        
+        let currentMedia = null;
+        
+        function stopCurrentMedia() {
+            if (currentMedia) {
+                try {
+                    currentMedia.pause();
+                    currentMedia.currentTime = 0;
+                    currentMedia.src = '';
+                } catch (e) {
+                    console.error('Error stopping media:', e);
+                }
+                currentMedia = null;
+            }
+        }
+        
+        modal.addEventListener('hidden.bs.modal', function () {
+            stopCurrentMedia();
+        });
+
+        async function playMedia(type, filename) {
+            try {
+                // Stop any currently playing media
+                stopCurrentMedia();
+                
+                // Show the correct container and hide the other
+                document.getElementById('detectionVideo').style.display = type === 'video' ? 'block' : 'none';
+                document.getElementById('detectionAudio').style.display = type === 'audio' ? 'block' : 'none';
+                
+                // Get the media element
+                const mediaElement = type === 'video' ? 
+                    document.getElementById('detectionVideo') : 
+                    document.getElementById('detectionAudio');
+                
+                // Set the source
+                const source = type === 'video' ? 
+                    `/recordings/video/${filename}` : 
+                    `/recordings/audio/${filename}`;
+                
+                // Show modal first
+                modal.style.display = "block";
+                
+                // Wait for modal transition
+                await new Promise(resolve => setTimeout(resolve, 500));
+                
+                // Set source and load
+                mediaElement.src = source;
+                await mediaElement.load();
+                
+                // Store current media
+                currentMedia = mediaElement;
+                
+                // Play after a short delay
+                setTimeout(async () => {
+                    try {
+                        await mediaElement.play();
+                    } catch (e) {
+                        console.error('Error playing media:', e);
+                    }
+                }, 100);
+                
+            } catch (error) {
+                console.error('Error playing media:', error);
+                alert('Error playing media. Please try again.');
+            }
+        }
+        
+        closeModal.onclick = function() {
+            modal.style.display = "none";
+            stopCurrentMedia();
+        }
+        
+        window.onclick = function(event) {
+            if (event.target == modal) {
+                closeModal.onclick();
+            }
+        }
+        
         // Handle notifications
         socket.on('notification', function(data) {
             const notification = document.createElement('div');
             notification.className = `notification ${data.type || 'motion'}`;
-            notification.textContent = `${new Date().toLocaleTimeString()}: ${data.message}`;
+            
+            // Create timestamp and message
+            const timestamp = new Date().toLocaleTimeString();
+            let content = `${timestamp}: ${data.message}`;
+            
+            // Add media links if available
+            if (data.type === 'motion' && data.data && data.data.video) {
+                content += `<span class="media-link" onclick="playMedia('video', '${data.data.video}')">View Recording</span>`;
+            }
+            if (data.type === 'bark' && data.data && data.data.audio) {
+                content += `<span class="media-link" onclick="playMedia('audio', '${data.data.audio}')">Play Audio</span>`;
+            }
+            
+            notification.innerHTML = content;
             
             // Check if notification should be shown based on filters
             const shouldShow = (data.type === 'bark' && showBarks.checked) ||

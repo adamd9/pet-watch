@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import platform
 import numpy as np
 import sounddevice as sd
 import cv2
@@ -8,17 +9,20 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 import threading
 import queue
-from flask import Flask, render_template, Response, jsonify
+from flask import Flask, render_template, Response, jsonify, send_from_directory
 from flask_socketio import SocketIO
 import base64
-import platform
 import logging
 import scipy.io.wavfile as wavfile
 import tempfile
+import soundfile as sf
 
 # Configure logging
-logging.basicConfig(level=logging.INFO,
-                   format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
@@ -38,6 +42,15 @@ class PetMonitor:
         
         os.makedirs(self.video_output_dir, exist_ok=True)
         os.makedirs(self.audio_output_dir, exist_ok=True)
+
+        # Recording buffers
+        self.video_buffer = []
+        self.audio_buffer = []
+        self.video_buffer_seconds = 5  # Keep 5 seconds of video
+        self.audio_buffer_seconds = 5  # Keep 5 seconds of audio
+        self.last_video_save = 0
+        self.last_audio_save = 0
+        self.min_save_interval = 2  # Minimum seconds between saves
         
         # Device settings
         self.preferred_camera_id = camera_id
@@ -108,6 +121,13 @@ class PetMonitor:
     def init_audio(self, device_id=None):
         """Initialize audio with error handling and fallback"""
         try:
+            # List all audio devices for debugging
+            devices = sd.query_devices()
+            logger.debug("Available audio devices:")
+            for i, device in enumerate(devices):
+                logger.debug(f"  [{i}] {device['name']} (in={device['max_input_channels']}, "
+                           f"out={device['max_output_channels']}, default={device['default_samplerate']}Hz)")
+            
             if device_id is not None:
                 device_info = sd.query_devices(device_id)
                 if device_info['max_input_channels'] > 0:
@@ -115,18 +135,19 @@ class PetMonitor:
                     self.preferred_audio_id = device_id
                     self.sample_rate = int(device_info['default_samplerate'])
                     self.channels = min(device_info['max_input_channels'], 2)
-                    logger.info(f"Successfully initialized audio device {device_id}")
+                    logger.info(f"Successfully initialized audio device {device_id}: "
+                              f"{device_info['name']} ({self.channels} channels @ {self.sample_rate}Hz)")
                     return
             
             # If no device specified or specified device failed, find first input device
-            devices = sd.query_devices()
             for i, device in enumerate(devices):
                 if device['max_input_channels'] > 0:
                     self.audio_device = i
                     self.preferred_audio_id = i
                     self.sample_rate = int(device['default_samplerate'])
                     self.channels = min(device['max_input_channels'], 2)
-                    logger.info(f"Using default audio device {i}")
+                    logger.info(f"Using default audio device {i}: "
+                              f"{device['name']} ({self.channels} channels @ {self.sample_rate}Hz)")
                     return
             
             raise Exception("No suitable audio input device found")
@@ -136,36 +157,65 @@ class PetMonitor:
             self.preferred_audio_id = None
     
     def detect_bark(self, audio_chunk):
-        """Detect barking in audio chunk with configurable parameters"""
+        """Detect barking in audio chunk and save audio if detected"""
         try:
-            if self.scaler is None or self.classifier is None:
-                return False
+            # Convert to float32 if needed
+            if audio_chunk.dtype != np.float32:
+                audio_chunk = audio_chunk.astype(np.float32)
             
-            # Calculate audio features
-            amplitude = np.abs(audio_chunk)
-            mean_amplitude = np.mean(amplitude)
+            # Calculate RMS amplitude with higher scaling for low inputs
+            rms = np.sqrt(np.mean(np.square(audio_chunk))) * 10000
             
-            # Apply sensitivity and threshold
-            normalized_amplitude = (mean_amplitude * self.bark_sensitivity) / 50
-            threshold_value = (self.bark_threshold * np.max(amplitude)) / 100
+            # Calculate peak amplitude with higher scaling
+            peak = np.max(np.abs(audio_chunk)) * 10000
             
-            # Check if the sound meets our criteria
-            if normalized_amplitude > threshold_value:
-                # Check duration
-                duration_samples = int(self.bark_duration * self.sample_rate / 1000)
-                if len(np.where(amplitude > threshold_value)[0]) >= duration_samples:
-                    # Check cooldown
-                    current_time = time.time()
-                    if (current_time - self.last_bark_time) > self.bark_cooldown:
-                        self.last_bark_time = current_time
-                        return True
+            # Normalize to 0-100 range (values are already scaled)
+            normalized_rms = min(100, rms)
+            normalized_peak = min(100, peak)
             
-            return False
+            # Apply sensitivity factor
+            sensitivity_factor = self.bark_sensitivity / 50.0  # Convert 0-100 to scaling factor
+            detection_value = (normalized_rms + normalized_peak) / 2 * sensitivity_factor
+            
+            # Check if amplitude exceeds threshold and duration
+            # Scale the input values before threshold comparison
+            scaled_audio = np.abs(audio_chunk) * 10000
+            samples_above_threshold = np.sum(scaled_audio > self.bark_threshold)
+            
+            # Reduce required duration based on sensitivity
+            duration_samples = int((self.bark_duration / sensitivity_factor) * self.sample_rate / 1000)
+            duration_samples = max(100, min(duration_samples, int(0.5 * self.sample_rate)))  # Between 100 samples and 0.5s
+            
+            # Log detection values for debugging
+            if detection_value > self.bark_threshold / 2:  # Only log when there's significant sound
+                logger.debug(f"Bark detection values - RMS: {normalized_rms:.2f}, Peak: {normalized_peak:.2f}, "
+                           f"Detection: {detection_value:.2f}, Threshold: {self.bark_threshold}, "
+                           f"Samples above threshold: {samples_above_threshold}, Required: {duration_samples}")
+            
+            # Detect bark based on amplitude and duration
+            bark_detected = (detection_value > self.bark_threshold and 
+                           samples_above_threshold > duration_samples)
+            
+            # Update audio buffer
+            self.update_audio_buffer(audio_chunk)
+            
+            # Handle bark detection and notification
+            current_time = time.time()
+            if bark_detected and (current_time - self.last_bark_time) > self.bark_cooldown:
+                logger.info(f"Bark detected! Detection value: {detection_value:.2f}, "
+                          f"Samples above threshold: {samples_above_threshold}")
+                # Save audio clip
+                audio_file = self.save_audio_clip()
+                if audio_file:
+                    self._send_notification("Bark detected!", 'bark', {'audio': audio_file})
+                self.last_bark_time = current_time
+            
+            return bark_detected
             
         except Exception as e:
             logger.error(f"Bark detection error: {str(e)}")
             return False
-    
+
     def save_audio(self, audio_chunk, filename):
         """Save audio chunk to file"""
         try:
@@ -179,42 +229,67 @@ class PetMonitor:
     
     def record_audio(self):
         """Record audio from the microphone"""
+        logger.info("Audio recording thread started")
         while self.running and self.audio_enabled:
             try:
-                timestamp = time.strftime("%Y%m%d_%H%M%S")
-                audio_filename = os.path.join(self.audio_output_dir, f'pet_audio_{timestamp}.wav')
-                
+                if self.audio_device is None:
+                    logger.warning("Audio device not available, attempting to reinitialize...")
+                    self.init_audio(self.preferred_audio_id)
+                    if self.audio_device is None:
+                        time.sleep(5)  # Wait before retrying
+                        continue
+
+                # Log audio recording status
+                logger.debug(f"Recording audio chunk (device={self.audio_device}, "
+                           f"rate={self.sample_rate}, channels={self.channels})")
+
                 # Record audio
                 audio_chunk = sd.rec(
                     int(self.sample_rate * self.audio_chunk_duration),
                     samplerate=self.sample_rate,
                     channels=self.channels,
-                    blocking=True
+                    blocking=True,
+                    device=self.audio_device
                 )
                 
-                if self.detect_bark(audio_chunk):
-                    self._send_notification("Bark detected!", 'bark')
+                # Log audio chunk properties
+                if audio_chunk is not None:
+                    logger.debug(f"Recorded audio chunk: shape={audio_chunk.shape}, "
+                               f"dtype={audio_chunk.dtype}, "
+                               f"min={np.min(audio_chunk):.3f}, "
+                               f"max={np.max(audio_chunk):.3f}, "
+                               f"rms={np.sqrt(np.mean(np.square(audio_chunk))):.3f}")
+                else:
+                    logger.warning("Failed to record audio chunk (None returned)")
+                    continue
                 
-                # Save audio chunk
-                if self.save_audio(audio_chunk, audio_filename):
-                    self.audio_queue.put(audio_filename)
-                    
-                    # Stream audio to web interface
-                    audio_bytes = base64.b64encode(audio_chunk.tobytes()).decode('utf-8')
-                    socketio.emit('audio_data', {'audio': audio_bytes})
+                # Update audio buffer
+                self.update_audio_buffer(audio_chunk)
+                
+                # Check for bark
+                if self.detect_bark(audio_chunk):
+                    # Save audio clip and send notification
+                    audio_file = self.save_audio_clip()
+                    if audio_file:
+                        self._send_notification("Bark detected!", 'bark', {'audio': audio_file})
                 
             except Exception as e:
                 logger.error(f"Audio recording error: {str(e)}")
                 time.sleep(1)
-    
-    def _send_notification(self, message, notification_type='motion'):
-        """Send a notification to the web interface with type"""
+        
+        logger.info("Audio recording thread stopped")
+
+    def _send_notification(self, message, notification_type='motion', data=None):
+        """Send a notification to the web interface with type and optional data"""
         try:
             logger.info(f"NOTIFICATION ({notification_type}): {message}")
-            socketio.emit('notification', {
+            notification = {
                 'message': message,
                 'type': notification_type
-            })
+            }
+            if data:
+                notification['data'] = data
+            socketio.emit('notification', notification)
         except Exception as e:
             logger.error(f"Failed to send notification: {str(e)}")
 
@@ -255,8 +330,11 @@ class PetMonitor:
             return None
 
     def detect_motion(self, frame):
-        """Detect motion in the frame"""
+        """Detect motion in frame and save video if detected"""
         try:
+            # Create a copy of the frame for modification
+            frame_with_motion = frame.copy()
+            
             # Apply background subtraction
             fg_mask = self.motion_detector.apply(frame)
             
@@ -274,17 +352,25 @@ class PetMonitor:
                     motion_detected = True
                     # Draw rectangle around motion
                     x, y, w, h = cv2.boundingRect(contour)
-                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                    cv2.rectangle(frame_with_motion, (x, y), (x + w, y + h), (0, 255, 0), 2)
             
-            # Update motion status and send notification if needed
+            # Update video buffer
+            self.update_video_buffer(frame_with_motion)
+            
+            # Handle motion detection and notification
             current_time = time.time()
             if motion_detected and not self.motion_detected and \
                (current_time - self.last_motion_time) > self.motion_cooldown:
-                self._send_notification("Motion detected!")
+                # Save video clip
+                video_file = self.save_video_clip()
+                if video_file:
+                    self._send_notification("Motion detected!", 'motion', {'video': video_file})
                 self.last_motion_time = current_time
             
             self.motion_detected = motion_detected
-            return frame
+            
+            # Return the frame with motion rectangles drawn
+            return frame_with_motion
             
         except Exception as e:
             logger.error(f"Motion detection error: {str(e)}")
@@ -294,40 +380,142 @@ class PetMonitor:
         """Record video from the camera"""
         while self.running:
             try:
+                if self.camera is None or not self.camera.isOpened():
+                    logger.warning("Camera not available, attempting to reinitialize...")
+                    self.init_camera(self.preferred_camera_id)
+                    if self.camera is None or not self.camera.isOpened():
+                        time.sleep(5)  # Wait before retrying
+                        continue
+
                 ret, frame = self.camera.read()
                 if ret:
-                    # Apply motion detection
+                    # Apply motion detection and get frame with motion indicators
                     frame_with_motion = self.detect_motion(frame)
                     
                     # Update the current frame for web streaming
                     with self.frame_lock:
                         self.current_frame = frame_with_motion
                     
-                    # Save frame if motion is detected
-                    if self.motion_detected:
-                        timestamp = time.strftime("%Y%m%d_%H%M%S")
-                        video_filename = os.path.join(self.video_output_dir, f'motion_{timestamp}.jpg')
-                        cv2.imwrite(video_filename, frame_with_motion)
-                        self.video_queue.put(video_filename)
-                
                 time.sleep(0.03)  # ~30 FPS
                 
             except Exception as e:
                 logger.error(f"Video recording error: {str(e)}")
                 time.sleep(1)
-    
+
+    def save_video_clip(self, frames=None):
+        """Save a video clip of the detection"""
+        if time.time() - self.last_video_save < self.min_save_interval:
+            return None
+        
+        try:
+            timestamp = int(time.time())
+            filename = f'motion_{timestamp}.mp4'
+            filepath = os.path.join(self.video_output_dir, filename)
+            
+            # Use buffered frames or provided frames
+            frames_to_save = frames if frames is not None else self.video_buffer
+            
+            if not frames_to_save:
+                return None
+                
+            # Get frame properties
+            height, width = frames_to_save[0].shape[:2]
+            
+            # Create video writer with H.264 codec
+            if platform.system() == 'Darwin':  # macOS
+                fourcc = cv2.VideoWriter_fourcc(*'avc1')
+            else:  # Linux/Windows
+                fourcc = cv2.VideoWriter_fourcc(*'X264')
+            
+            out = cv2.VideoWriter(filepath, fourcc, 20.0, (width, height))
+            
+            # Write frames
+            for frame in frames_to_save:
+                out.write(frame)
+            
+            out.release()
+            self.last_video_save = time.time()
+            
+            logger.info(f"Saved video clip: {filename}")
+            return filename
+            
+        except Exception as e:
+            logger.error(f"Error saving video clip: {str(e)}")
+            return None
+
+    def save_audio_clip(self, audio_data=None):
+        """Save an audio clip of the detection"""
+        if time.time() - self.last_audio_save < self.min_save_interval:
+            return None
+            
+        try:
+            timestamp = int(time.time())
+            filename = f'bark_{timestamp}.wav'
+            filepath = os.path.join(self.audio_output_dir, filename)
+            
+            # Use buffered audio or provided audio
+            audio_to_save = audio_data if audio_data is not None else np.concatenate(self.audio_buffer)
+            
+            if audio_to_save.size == 0:
+                return None
+            
+            # Convert float32 to int16
+            audio_int16 = (audio_to_save * 32767).astype(np.int16)
+            
+            # Save as WAV file
+            wavfile.write(filepath, self.sample_rate, audio_int16)
+            self.last_audio_save = time.time()
+            
+            logger.info(f"Saved audio clip: {filename}")
+            return filename
+            
+        except Exception as e:
+            logger.error(f"Error saving audio clip: {str(e)}")
+            return None
+
+    def update_video_buffer(self, frame):
+        """Update the video buffer with a new frame"""
+        self.video_buffer.append(frame.copy())
+        
+        # Calculate max buffer size based on FPS
+        fps = self.camera.get(cv2.CAP_PROP_FPS)
+        max_frames = int(fps * self.video_buffer_seconds)
+        
+        # Trim buffer if needed
+        if len(self.video_buffer) > max_frames:
+            self.video_buffer = self.video_buffer[-max_frames:]
+
+    def update_audio_buffer(self, audio_chunk):
+        """Update the audio buffer with new audio data"""
+        self.audio_buffer.append(audio_chunk)
+        
+        # Calculate max buffer size based on sample rate
+        max_samples = int(self.sample_rate * self.audio_buffer_seconds)
+        total_samples = sum(chunk.shape[0] for chunk in self.audio_buffer)
+        
+        # Trim buffer if needed
+        while total_samples > max_samples and self.audio_buffer:
+            removed_chunk = self.audio_buffer.pop(0)
+            total_samples -= removed_chunk.shape[0]
+
     def start_monitoring(self):
         """Start the monitoring threads"""
         self.running = True
-        video_thread = threading.Thread(target=self.record_video, daemon=True)
+        
+        # Start video recording thread
+        video_thread = threading.Thread(target=self.record_video)
+        video_thread.daemon = True
         video_thread.start()
         
+        # Start audio recording thread if audio is enabled
         if self.audio_enabled:
-            audio_thread = threading.Thread(target=self.record_audio, daemon=True)
+            logger.info("Starting audio recording thread")
+            audio_thread = threading.Thread(target=self.record_audio)
+            audio_thread.daemon = True
             audio_thread.start()
         else:
-            logger.warning("Audio recording is disabled due to initialization failure")
-    
+            logger.warning("Audio recording is disabled")
+
     def cleanup(self):
         """Clean up resources"""
         self.running = False
@@ -571,6 +759,24 @@ def handle_toggle_audio(data):
             logger.info(f"Audio {'enabled' if monitor.audio_enabled else 'disabled'}")
     except Exception as e:
         logger.error(f"Error toggling audio: {str(e)}")
+
+@app.route('/recordings/video/<path:filename>')
+def serve_video(filename):
+    """Serve video recordings"""
+    try:
+        return send_from_directory(monitor.video_output_dir, filename)
+    except Exception as e:
+        logger.error(f"Error serving video {filename}: {str(e)}")
+        return "Video not found", 404
+
+@app.route('/recordings/audio/<path:filename>')
+def serve_audio(filename):
+    """Serve audio recordings"""
+    try:
+        return send_from_directory(monitor.audio_output_dir, filename)
+    except Exception as e:
+        logger.error(f"Error serving audio {filename}: {str(e)}")
+        return "Audio not found", 404
 
 def main():
     global monitor
