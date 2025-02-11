@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Pet Monitor</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .video-container {
+            margin-bottom: 20px;
+        }
+        #videoFeed {
+            max-width: 100%;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+        }
+        .controls {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .control-group {
+            margin-bottom: 15px;
+        }
+        .control-group h3 {
+            margin: 0 0 10px 0;
+            color: #333;
+        }
+        .slider-container {
+            display: flex;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .slider-container label {
+            width: 200px;
+            margin-right: 10px;
+        }
+        .slider-container input[type="range"] {
+            flex-grow: 1;
+            margin-right: 10px;
+        }
+        .slider-container .value {
+            width: 50px;
+            text-align: right;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        #notifications {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .notification {
+            padding: 10px;
+            margin-bottom: 5px;
+            background-color: #f8f8f8;
+            border-left: 4px solid #4CAF50;
+        }
+        .notification-controls {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        .notification-filters {
+            display: flex;
+            gap: 15px;
+        }
+        .notification-filters label {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .notification.bark {
+            border-left-color: #ff9800;
+        }
+        .notification.motion {
+            border-left-color: #4CAF50;
+        }
+        .device-selector {
+            margin-bottom: 15px;
+        }
+        .device-selector select {
+            margin: 0 10px;
+            padding: 5px;
+            min-width: 200px;
+        }
+        .status {
+            display: inline-block;
+            margin-left: 10px;
+            font-size: 0.9em;
+        }
+        .status.success {
+            color: #4CAF50;
+        }
+        .status.error {
+            color: #f44336;
+        }
+        .update-status {
+            display: inline-block;
+            margin-left: 10px;
+            font-size: 0.9em;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .update-status.show {
+            opacity: 1;
+        }
+        .update-status.success::before {
+            content: '✓';
+            color: #4CAF50;
+            margin-right: 5px;
+        }
+        .update-status.error::before {
+            content: '✗';
+            color: #f44336;
+            margin-right: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="video-container">
+            <img id="videoFeed" src="{{ url_for('video_feed') }}" alt="Video Feed">
+        </div>
+        
+        <div class="controls">
+            <div class="control-group">
+                <h3>Device Selection</h3>
+                <div class="device-selector">
+                    <label for="videoDevice">Video Device:</label>
+                    <select id="videoDevice"></select>
+                    <span id="videoStatus" class="status"></span>
+                </div>
+                <div class="device-selector">
+                    <label for="audioDevice">Audio Device:</label>
+                    <select id="audioDevice"></select>
+                    <span id="audioStatus" class="status"></span>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <h3>Audio Controls</h3>
+                <button id="toggleAudio">Toggle Audio</button>
+            </div>
+            
+            <div class="control-group">
+                <h3>Motion Detection Settings</h3>
+                <div class="slider-container">
+                    <label>Minimum Motion Area:</label>
+                    <input type="range" id="motionArea" min="100" max="2000" value="500">
+                    <span class="value" id="motionAreaValue">500</span>
+                    <span class="update-status"></span>
+                </div>
+                <div class="slider-container">
+                    <label>Motion Threshold:</label>
+                    <input type="range" id="motionThreshold" min="5" max="50" value="20">
+                    <span class="value" id="motionThresholdValue">20</span>
+                    <span class="update-status"></span>
+                </div>
+                <div class="slider-container">
+                    <label>Notification Cooldown (sec):</label>
+                    <input type="range" id="motionCooldown" min="1" max="30" value="5">
+                    <span class="value" id="motionCooldownValue">5</span>
+                    <span class="update-status"></span>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <h3>Bark Detection Settings</h3>
+                <div class="slider-container">
+                    <label>Audio Sensitivity:</label>
+                    <input type="range" id="barkSensitivity" min="1" max="100" value="50">
+                    <span class="value" id="barkSensitivityValue">50</span>
+                    <span class="update-status"></span>
+                </div>
+                <div class="slider-container">
+                    <label>Minimum Bark Duration (ms):</label>
+                    <input type="range" id="barkDuration" min="100" max="1000" step="100" value="300">
+                    <span class="value" id="barkDurationValue">300</span>
+                    <span class="update-status"></span>
+                </div>
+                <div class="slider-container">
+                    <label>Bark Threshold:</label>
+                    <input type="range" id="barkThreshold" min="1" max="100" value="50">
+                    <span class="value" id="barkThresholdValue">50</span>
+                    <span class="update-status"></span>
+                </div>
+                <div class="slider-container">
+                    <label>Bark Cooldown (sec):</label>
+                    <input type="range" id="barkCooldown" min="1" max="30" value="3">
+                    <span class="value" id="barkCooldownValue">3</span>
+                    <span class="update-status"></span>
+                </div>
+            </div>
+        </div>
+
+        <div id="notifications">
+            <h3>Notifications</h3>
+            <div class="notification-controls">
+                <button id="clearNotifications">Clear Notifications</button>
+                <div class="notification-filters">
+                    <label><input type="checkbox" id="showMotion" checked> Motion Events</label>
+                    <label><input type="checkbox" id="showBarks" checked> Bark Events</label>
+                </div>
+            </div>
+            <div id="notificationList"></div>
+        </div>
+    </div>
+
+    <script>
+        // Socket.io setup
+        const socket = io();
+        
+        // Get DOM elements
+        const videoFeed = document.getElementById('videoFeed');
+        const notificationList = document.getElementById('notificationList');
+        const toggleAudioBtn = document.getElementById('toggleAudio');
+        const clearNotificationsBtn = document.getElementById('clearNotifications');
+        const showMotion = document.getElementById('showMotion');
+        const showBarks = document.getElementById('showBarks');
+        
+        // Device selection elements
+        const videoDevice = document.getElementById('videoDevice');
+        const audioDevice = document.getElementById('audioDevice');
+        const videoStatus = document.getElementById('videoStatus');
+        const audioStatus = document.getElementById('audioStatus');
+
+        // Parameter control elements
+        const motionArea = document.getElementById('motionArea');
+        const motionThreshold = document.getElementById('motionThreshold');
+        const motionCooldown = document.getElementById('motionCooldown');
+        const barkSensitivity = document.getElementById('barkSensitivity');
+        const barkDuration = document.getElementById('barkDuration');
+        const barkThreshold = document.getElementById('barkThreshold');
+        const barkCooldown = document.getElementById('barkCooldown');
+
+        // Function to update slider display value
+        function updateSliderDisplay(slider, value) {
+            slider.value = value;
+            slider.nextElementSibling.textContent = value;
+        }
+
+        // Load current parameters from server
+        fetch('/api/parameters')
+            .then(response => response.json())
+            .then(params => {
+                if (params.motion) {
+                    updateSliderDisplay(motionArea, params.motion.min_area);
+                    updateSliderDisplay(motionThreshold, params.motion.threshold);
+                    updateSliderDisplay(motionCooldown, params.motion.cooldown);
+                }
+                if (params.bark) {
+                    updateSliderDisplay(barkSensitivity, params.bark.sensitivity);
+                    updateSliderDisplay(barkDuration, params.bark.duration);
+                    updateSliderDisplay(barkThreshold, params.bark.threshold);
+                    updateSliderDisplay(barkCooldown, params.bark.cooldown);
+                }
+            })
+            .catch(error => console.error('Error loading parameters:', error));
+
+        // Handle device selection
+        videoDevice.onchange = function() {
+            socket.emit('select_video_device', {
+                device_id: parseInt(this.value)
+            });
+        };
+
+        audioDevice.onchange = function() {
+            socket.emit('select_audio_device', {
+                device_id: parseInt(this.value)
+            });
+        };
+
+        // Handle device updates
+        socket.on('device_update', function(data) {
+            const status = data.type === 'video' ? videoStatus : audioStatus;
+            const deviceSelect = data.type === 'video' ? videoDevice : audioDevice;
+            
+            // Update status message
+            status.textContent = data.status === 'success' ? 'Connected' : `Error: ${data.message}`;
+            status.className = `status ${data.status}`;
+            
+            // Update selected device if needed
+            if (data.selected_id !== undefined && deviceSelect.value != data.selected_id) {
+                deviceSelect.value = data.selected_id;
+            }
+            
+            // Clear status after 3 seconds
+            setTimeout(() => {
+                status.textContent = '';
+                status.className = 'status';
+            }, 3000);
+        });
+
+        // Function to populate device list and select saved device
+        function populateDeviceList(devices, type) {
+            const select = type === 'video' ? videoDevice : audioDevice;
+            const deviceList = type === 'video' ? devices.video_devices : devices.audio_devices;
+            
+            // Clear existing options
+            select.innerHTML = '';
+            
+            // Add devices
+            deviceList.forEach(device => {
+                const option = document.createElement('option');
+                option.value = device.id;
+                option.textContent = device.name;
+                select.appendChild(option);
+            });
+            
+            // Get saved device ID from server
+            fetch('/api/parameters')
+                .then(response => response.json())
+                .then(params => {
+                    if (params.devices) {
+                        const savedId = type === 'video' ? params.devices.camera_id : params.devices.audio_id;
+                        if (savedId !== null) {
+                            // Check if the saved device still exists
+                            const exists = Array.from(select.options).some(opt => opt.value == savedId);
+                            if (exists) {
+                                select.value = savedId;
+                                // Trigger device selection to ensure it's active
+                                const event = new Event('change');
+                                select.dispatchEvent(event);
+                            }
+                        }
+                    }
+                })
+                .catch(error => console.error('Error loading device settings:', error));
+        }
+
+        // Fetch and populate device lists
+        fetch('/api/devices')
+            .then(response => response.json())
+            .then(devices => {
+                populateDeviceList(devices, 'video');
+                populateDeviceList(devices, 'audio');
+            })
+            .catch(error => console.error('Error loading devices:', error));
+
+        // Function to show parameter update status
+        function showUpdateStatus(element, success, message = '') {
+            const status = element.parentNode.querySelector('.update-status');
+            status.textContent = message;
+            status.className = `update-status show ${success ? 'success' : 'error'}`;
+            
+            // Clear status after 2 seconds
+            setTimeout(() => {
+                status.className = 'update-status';
+            }, 2000);
+        }
+
+        // Handle parameter updates confirmation
+        socket.on('params_updated', function(data) {
+            const isSuccess = !data.status || data.status !== 'error';
+            const message = isSuccess ? '' : data.message;
+            
+            if (data.type === 'motion') {
+                if (data.values.min_area !== undefined) {
+                    showUpdateStatus(motionArea, isSuccess, message);
+                }
+                if (data.values.threshold !== undefined) {
+                    showUpdateStatus(motionThreshold, isSuccess, message);
+                }
+                if (data.values.cooldown !== undefined) {
+                    showUpdateStatus(motionCooldown, isSuccess, message);
+                }
+            } else if (data.type === 'bark') {
+                if (data.values.sensitivity !== undefined) {
+                    showUpdateStatus(barkSensitivity, isSuccess, message);
+                }
+                if (data.values.duration !== undefined) {
+                    showUpdateStatus(barkDuration, isSuccess, message);
+                }
+                if (data.values.threshold !== undefined) {
+                    showUpdateStatus(barkThreshold, isSuccess, message);
+                }
+                if (data.values.cooldown !== undefined) {
+                    showUpdateStatus(barkCooldown, isSuccess, message);
+                }
+            }
+        });
+
+        // Update motion detection parameters with debounce
+        let motionUpdateTimeout;
+        function updateMotionParams() {
+            clearTimeout(motionUpdateTimeout);
+            motionUpdateTimeout = setTimeout(() => {
+                socket.emit('update_motion_params', {
+                    min_area: parseInt(motionArea.value),
+                    threshold: parseInt(motionThreshold.value),
+                    cooldown: parseInt(motionCooldown.value)
+                });
+            }, 300);  // Wait 300ms after last change before sending update
+        }
+
+        // Update bark detection parameters with debounce
+        let barkUpdateTimeout;
+        function updateBarkParams() {
+            clearTimeout(barkUpdateTimeout);
+            barkUpdateTimeout = setTimeout(() => {
+                socket.emit('update_bark_params', {
+                    sensitivity: parseInt(barkSensitivity.value),
+                    duration: parseInt(barkDuration.value),
+                    threshold: parseInt(barkThreshold.value),
+                    cooldown: parseInt(barkCooldown.value)
+                });
+            }, 300);  // Wait 300ms after last change before sending update
+        }
+
+        // Attach update handlers to all sliders
+        [motionArea, motionThreshold, motionCooldown].forEach(slider => {
+            slider.oninput = function() {
+                this.nextElementSibling.textContent = this.value;
+                updateMotionParams();
+            };
+        });
+
+        [barkSensitivity, barkDuration, barkThreshold, barkCooldown].forEach(slider => {
+            slider.oninput = function() {
+                this.nextElementSibling.textContent = this.value;
+                updateBarkParams();
+            };
+        });
+
+        // Handle notifications
+        socket.on('notification', function(data) {
+            const notification = document.createElement('div');
+            notification.className = `notification ${data.type || 'motion'}`;
+            notification.textContent = `${new Date().toLocaleTimeString()}: ${data.message}`;
+            
+            // Check if notification should be shown based on filters
+            const shouldShow = (data.type === 'bark' && showBarks.checked) ||
+                             (data.type === 'motion' && showMotion.checked);
+            
+            if (shouldShow) {
+                notificationList.insertBefore(notification, notificationList.firstChild);
+            }
+        });
+
+        // Filter existing notifications when checkboxes change
+        function updateNotificationVisibility() {
+            const notifications = notificationList.getElementsByClassName('notification');
+            Array.from(notifications).forEach(notification => {
+                if (notification.classList.contains('bark')) {
+                    notification.style.display = showBarks.checked ? 'block' : 'none';
+                } else if (notification.classList.contains('motion')) {
+                    notification.style.display = showMotion.checked ? 'block' : 'none';
+                }
+            });
+        }
+
+        showMotion.onchange = updateNotificationVisibility;
+        showBarks.onchange = updateNotificationVisibility;
+
+        // Clear notifications
+        clearNotificationsBtn.onclick = function() {
+            notificationList.innerHTML = '';
+        };
+
+        // Handle video feed
+        socket.on('video_frame', function(data) {
+            videoFeed.src = 'data:image/jpeg;base64,' + data.frame;
+        });
+
+        // Audio toggle
+        let audioEnabled = true;
+        toggleAudioBtn.onclick = function() {
+            audioEnabled = !audioEnabled;
+            socket.emit('toggle_audio', { enabled: audioEnabled });
+            this.textContent = audioEnabled ? 'Disable Audio' : 'Enable Audio';
+        };
+    </script>
+</body>
+</html>
