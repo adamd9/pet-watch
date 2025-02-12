@@ -213,6 +213,71 @@ A lightweight Python-based pet audio monitoring application designed for low-pow
    sudo systemctl start audio-monitor
    ```
 
+## Development vs Production Mode
+
+### Development Mode (macOS)
+The application can be run in development mode, which provides additional features for developers:
+
+1. Auto-reload on file changes:
+   - The app automatically restarts when `.py` or `.html` files are modified
+   - Changes are detected in real-time
+
+2. To run in development mode:
+```bash
+# Option 1: Using command line flag
+python audio_monitor.py --dev
+
+# Option 2: Using environment variable
+ENV=development python audio_monitor.py
+```
+
+### Production Mode (Raspberry Pi)
+For production deployment on Raspberry Pi, the application runs as a systemd service:
+
+1. Install the service:
+```bash
+# Copy files to Raspberry Pi
+scp -r pet_monitor/* pi@your-raspberry-pi:/home/pi/pet-monitor/
+
+# Set up Python virtual environment
+ssh pi@your-raspberry-pi
+cd /home/pi/pet-monitor
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# Install systemd service
+sudo cp pet-monitor.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable pet-monitor
+sudo systemctl start pet-monitor
+```
+
+2. Service features:
+   - Auto-starts on boot
+   - Restarts automatically on failure
+   - Limited to 3 restart attempts within 60 seconds to prevent infinite restart loops
+   - Logs accessible via journalctl:
+     ```bash
+     # View service logs
+     sudo journalctl -u pet-monitor -f
+     ```
+
+3. Service management:
+```bash
+# Check service status
+sudo systemctl status pet-monitor
+
+# Stop service
+sudo systemctl stop pet-monitor
+
+# Start service
+sudo systemctl start pet-monitor
+
+# Restart service
+sudo systemctl restart pet-monitor
+```
+
 ## API Endpoints
 
 ### GET /recordings

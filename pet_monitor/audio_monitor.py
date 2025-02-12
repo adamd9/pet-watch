@@ -11,6 +11,12 @@ import json
 from flask import Flask, render_template, jsonify, request, send_from_directory
 from datetime import timedelta
 import re
+import signal
+import argparse
+import platform
+import sys
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
 # Set up logging
 logging.basicConfig(
@@ -115,6 +121,23 @@ class LevelDB:
                 self.levels[filename]['duration'] = duration
             self.save_db()
 
+class FileChangeHandler(FileSystemEventHandler):
+    def __init__(self, restart_callback):
+        self.restart_callback = restart_callback
+        self.last_reload = 0
+        self.cooldown = 1  # Cooldown in seconds to prevent multiple reloads
+
+    def on_modified(self, event):
+        if event.is_directory:
+            return
+        if not event.src_path.endswith(('.py', '.html')):
+            return
+        current_time = time.time()
+        if current_time - self.last_reload > self.cooldown:
+            self.last_reload = current_time
+            logger.info(f"Detected change in {event.src_path}, restarting...")
+            self.restart_callback()
+
 class AudioMonitor:
     def __init__(self, audio_output_dir="recordings/audio"):
         self.audio_output_dir = audio_output_dir
@@ -149,10 +172,14 @@ class AudioMonitor:
         self.recordings = []
         self.load_existing_recordings()
         
+        # Register signal handlers for graceful shutdown
+        signal.signal(signal.SIGINT, self.signal_handler)
+        signal.signal(signal.SIGTERM, self.signal_handler)
+
         # Start monitoring if enabled
         if self.settings.settings['recording_enabled']:
             self.start()
-    
+
     def get_available_devices(self):
         """Get list of available audio input devices"""
         devices = []
@@ -421,6 +448,11 @@ class AudioMonitor:
             }
             recordings.append(recording_data)
         return recordings
+
+    def signal_handler(self, signum, frame):
+        logger.info(f"Received signal {signum}, shutting down gracefully...")
+        self.stop()
+        sys.exit(0)
 
 # Create global monitor instance
 monitor = None
@@ -703,14 +735,43 @@ audio_rate_limit = {
 }
 
 def main():
-    global monitor
-    
+    parser = argparse.ArgumentParser(description='Pet Monitor Audio Service')
+    parser.add_argument('--dev', action='store_true', help='Run in development mode')
+    args = parser.parse_args()
+
+    is_dev = args.dev or os.environ.get('ENV') == 'development'
+    is_production = os.environ.get('ENV') == 'production'
+
+    if is_dev:
+        logger.info("Running in development mode")
+        # Set up file watching for auto-reload
+        observer = Observer()
+        restart_event = threading.Event()
+
+        def restart_app():
+            global monitor
+            if monitor:
+                monitor.stop()
+            restart_event.set()
+
+        event_handler = FileChangeHandler(restart_app)
+        observer.schedule(event_handler, ".", recursive=True)
+        observer.start()
+    else:
+        logger.info("Running in production mode")
+
     try:
+        global monitor
         monitor = AudioMonitor()
-        app.run(host='0.0.0.0', port=5001)
-    except KeyboardInterrupt:
+        app.run(host='0.0.0.0', port=5000, use_reloader=False)
+    except Exception as e:
+        logger.error(f"Error in main: {str(e)}")
         if monitor:
-            monitor.cleanup()
+            monitor.stop()
+        if is_dev:
+            observer.stop()
+            observer.join()
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

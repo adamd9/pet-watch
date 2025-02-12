@@ -1,0 +1,18 @@
+[Unit]
+Description=Pet Monitor Audio Service
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/pet-monitor
+Environment=PYTHONUNBUFFERED=1
+Environment=ENV=production
+ExecStart=/home/pi/pet-monitor/venv/bin/python audio_monitor.py
+Restart=on-failure
+RestartSec=10
+StartLimitInterval=60
+StartLimitBurst=3
+
+[Install]
+WantedBy=multi-user.target
