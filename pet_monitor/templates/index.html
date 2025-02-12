@@ -1,148 +1,253 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Pet Monitor</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pet Audio Monitor</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+    <script src="https://cdn.jsdelivr.net/npm/date-fns"></script>
+    <script src="https://unpkg.com/wavesurfer.js@7/dist/wavesurfer.min.js"></script>
     <style>
         body {
-            font-family: Arial, sans-serif;
-            margin: 20px;
-            background-color: #f5f5f5;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            background: #f5f5f5;
         }
+        
         .container {
             max-width: 1200px;
             margin: 0 auto;
         }
-        .video-container {
-            margin-bottom: 20px;
-        }
-        #videoFeed {
-            max-width: 100%;
-            border: 2px solid #ddd;
-            border-radius: 8px;
-        }
-        .controls {
-            background: white;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            margin-bottom: 20px;
-        }
-        .control-group {
-            margin-bottom: 15px;
-        }
-        .control-group h3 {
-            margin: 0 0 10px 0;
-            color: #333;
-        }
-        .slider-container {
+        
+        .header {
             display: flex;
             align-items: center;
+            margin-bottom: 20px;
+        }
+        
+        h1 {
+            margin: 0;
+            flex-grow: 1;
+        }
+        
+        h2 {
+            margin: 0 0 15px 0;
+            color: #333;
+        }
+        
+        /* Timeline Section */
+        .timeline-section {
+            margin: 20px 0;
+            padding: 20px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        
+        .timeline-container {
+            width: 100%;
+            height: 400px;
+            margin: 20px 0;
+        }
+        
+        /* Current Recording Section */
+        .current-recording {
+            margin: 20px 0;
+            padding: 20px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        
+        .recording-status {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        
+        .recording-period {
+            font-size: 0.9em;
+            color: #666;
+            margin-bottom: 8px;
+        }
+        
+        .recording-duration {
+            font-size: 0.8em;
+            color: #888;
+            font-weight: 500;
+        }
+        
+        .recording-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: #4CAF50;
+            margin-right: 8px;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.3; }
+            100% { opacity: 1; }
+        }
+        
+        .audio-clip {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
             margin-bottom: 10px;
         }
-        .slider-container label {
-            width: 200px;
-            margin-right: 10px;
-        }
-        .slider-container input[type="range"] {
-            flex-grow: 1;
-            margin-right: 10px;
-        }
-        .slider-container .value {
-            width: 50px;
-            text-align: right;
-        }
-        button {
-            background-color: #4CAF50;
-            color: white;
-            padding: 10px 20px;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            margin-right: 10px;
-        }
-        button:hover {
-            background-color: #45a049;
-        }
-        #notifications {
-            background: white;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            max-height: 200px;
-            overflow-y: auto;
-        }
-        .notification {
-            padding: 10px;
-            margin-bottom: 5px;
-            background-color: #f8f8f8;
-            border-left: 4px solid #4CAF50;
-            cursor: pointer;
-        }
-        .notification:hover {
-            background-color: rgba(0,0,0,0.05);
-        }
-        .notification-controls {
+        
+        .audio-clip-info {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 15px;
-        }
-        .notification-filters {
-            display: flex;
-            gap: 15px;
-        }
-        .notification-filters label {
-            display: flex;
-            align-items: center;
-            gap: 5px;
-        }
-        .notification.bark {
-            border-left-color: #ff9800;
-        }
-        .notification.motion {
-            border-left-color: #4CAF50;
-        }
-        .device-selector {
-            margin-bottom: 15px;
-        }
-        .device-selector select {
-            margin: 0 10px;
-            padding: 5px;
-            min-width: 200px;
-        }
-        .status {
-            display: inline-block;
-            margin-left: 10px;
-            font-size: 0.9em;
-        }
-        .status.success {
-            color: #4CAF50;
-        }
-        .status.error {
-            color: #f44336;
-        }
-        .update-status {
-            display: inline-block;
-            margin-left: 10px;
-            font-size: 0.9em;
-            opacity: 0;
-            transition: opacity 0.3s;
-        }
-        .update-status.show {
-            opacity: 1;
-        }
-        .update-status.success::before {
-            content: '✓';
-            color: #4CAF50;
-            margin-right: 5px;
-        }
-        .update-status.error::before {
-            content: '✗';
-            color: #f44336;
-            margin-right: 5px;
+            margin-bottom: 10px;
         }
         
+        .audio-clip-time {
+            font-size: 0.9em;
+            color: #666;
+        }
+        
+        .audio-clip-duration {
+            font-size: 0.8em;
+            color: #888;
+            font-weight: 500;
+        }
+        
+        /* Recording List */
+        .recording-list {
+            margin: 20px 0;
+            padding: 20px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        
+        .recording-item {
+            display: flex;
+            flex-direction: column;
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+            background: #fff;
+        }
+        
+        .recording-info {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 10px;
+            flex: 1;
+            min-height: 40px;
+        }
+        
+        .timestamp {
+            color: #666;
+            font-size: 14px;
+            white-space: nowrap;
+            min-width: 80px;
+        }
+        
+        .level-indicator {
+            height: 30px;
+            border-radius: 2px;
+            min-width: 200px;
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+            background: #f5f5f5;
+            margin: 5px 0;
+            padding: 4px;
+        }
+
+        .loaded .level-indicator {
+            display: none;
+        }
+        
+        .mini-chart {
+            width: 100%;
+            height: 22px;
+            display: block;
+        }
+        
+        .recording-controls {
+            width: 100%;
+        }
+        
+        .audio-container {
+            display: none;
+            margin: 5px 0;
+            background: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            flex: 1;
+        }
+
+        .loaded .audio-container {
+            display: block;
+        }
+        
+        .audio-player {
+            width: 100%;
+        }
+
+        .waveform {
+            width: 100%;
+            height: 60px;
+            background: #fff;
+            border-radius: 4px;
+            margin-bottom: 8px;
+        }
+
+        .player-controls {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 5px;
+        }
+
+        .play-button {
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 5px 15px;
+            cursor: pointer;
+        }
+
+        .play-button:hover {
+            background: #0056b3;
+        }
+
+        .time-display {
+            font-size: 12px;
+            color: #666;
+            font-family: monospace;
+        }
+        
+        /* Buttons */
+        .refresh-button, .settings-button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-left: 10px;
+        }
+        
+        .refresh-button:hover, .settings-button:hover {
+            background-color: #0056b3;
+        }
+        
+        /* Settings Modal Styles */
         .modal {
             display: none;
             position: fixed;
@@ -151,509 +256,687 @@
             top: 0;
             width: 100%;
             height: 100%;
-            background-color: rgba(0,0,0,0.7);
+            background-color: rgba(0,0,0,0.5);
         }
         
         .modal-content {
-            background-color: #fefefe;
-            margin: 15% auto;
+            background-color: white;
+            margin: 10% auto;
             padding: 20px;
-            border: 1px solid #888;
-            width: 70%;
-            max-width: 800px;
             border-radius: 8px;
+            width: 80%;
+            max-width: 600px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
         }
         
-        .close-modal {
-            color: #aaa;
-            float: right;
-            font-size: 28px;
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        
+        .close {
+            font-size: 24px;
+            cursor: pointer;
+            color: #666;
+        }
+        
+        .close:hover {
+            color: #000;
+        }
+        
+        .setting-group {
+            margin-bottom: 20px;
+        }
+        
+        .setting-group label {
+            display: block;
+            margin-bottom: 8px;
             font-weight: bold;
+        }
+        
+        .setting-group select {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        
+        .setting-info {
+            margin-top: 4px;
+            font-size: 12px;
+            color: #666;
+        }
+        
+        .settings-message {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 4px;
+            display: none;
+        }
+        
+        .settings-message.success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .settings-message.error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        /* Unavailable device options */
+        select option.unavailable {
+            color: #999;
+            font-style: italic;
+        }
+        
+        .audio-levels {
+            height: 40px;
+            background: #f1f3f5;
+            border-radius: 4px;
+            margin: 10px 0;
+            display: flex;
+            align-items: flex-end;
+            overflow: hidden;
+        }
+        
+        .level-bar {
+            flex: 1;
+            background: #4CAF50;
+            margin: 0 1px;
+            min-width: 3px;
+            transition: height 0.2s ease;
+        }
+        
+        /* Add new styles for audio loading states */
+        .load-button {
+            padding: 5px 10px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
             cursor: pointer;
+            font-size: 14px;
         }
-        
-        .close-modal:hover {
-            color: black;
+
+        .load-button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
         }
-        
-        .media-link {
-            color: #007bff;
-            text-decoration: underline;
-            margin-left: 10px;
-            cursor: pointer;
+
+        .loading-indicator {
+            display: none;
+            color: #666;
+            font-size: 14px;
         }
-        
-        .media-link:hover {
-            color: #0056b3;
+
+        .loading .loading-indicator {
+            display: inline;
+        }
+
+        .loading .load-button {
+            display: none;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="video-container">
-            <img id="videoFeed" src="{{ url_for('video_feed') }}" alt="Video Feed">
+        <div class="header">
+            <h1>Pet Audio Monitor</h1>
+            <button class="refresh-button" onclick="loadAll()">Refresh All</button>
+            <button class="settings-button" onclick="toggleSettings()">Settings</button>
         </div>
         
-        <div class="controls">
-            <div class="control-group">
-                <h3>Device Selection</h3>
-                <div class="device-selector">
-                    <label for="videoDevice">Video Device:</label>
-                    <select id="videoDevice"></select>
-                    <span id="videoStatus" class="status"></span>
-                </div>
-                <div class="device-selector">
-                    <label for="audioDevice">Audio Device:</label>
-                    <select id="audioDevice"></select>
-                    <span id="audioStatus" class="status"></span>
-                </div>
-            </div>
-
-            <div class="control-group">
-                <h3>Audio Controls</h3>
-                <button id="toggleAudio">Toggle Audio</button>
-            </div>
-            
-            <div class="control-group">
-                <h3>Motion Detection Settings</h3>
-                <div class="slider-container">
-                    <label>Minimum Motion Area:</label>
-                    <input type="range" id="motionArea" min="100" max="2000" value="500">
-                    <span class="value" id="motionAreaValue">500</span>
-                    <span class="update-status"></span>
-                </div>
-                <div class="slider-container">
-                    <label>Motion Threshold:</label>
-                    <input type="range" id="motionThreshold" min="5" max="50" value="20">
-                    <span class="value" id="motionThresholdValue">20</span>
-                    <span class="update-status"></span>
-                </div>
-                <div class="slider-container">
-                    <label>Notification Cooldown (sec):</label>
-                    <input type="range" id="motionCooldown" min="1" max="30" value="5">
-                    <span class="value" id="motionCooldownValue">5</span>
-                    <span class="update-status"></span>
-                </div>
-            </div>
-
-            <div class="control-group">
-                <h3>Bark Detection Settings</h3>
-                <div class="slider-container">
-                    <label>Audio Sensitivity:</label>
-                    <input type="range" id="barkSensitivity" min="1" max="100" value="50">
-                    <span class="value" id="barkSensitivityValue">50</span>
-                    <span class="update-status"></span>
-                </div>
-                <div class="slider-container">
-                    <label>Minimum Bark Duration (ms):</label>
-                    <input type="range" id="barkDuration" min="100" max="1000" step="100" value="300">
-                    <span class="value" id="barkDurationValue">300</span>
-                    <span class="update-status"></span>
-                </div>
-                <div class="slider-container">
-                    <label>Bark Threshold:</label>
-                    <input type="range" id="barkThreshold" min="1" max="100" value="50">
-                    <span class="value" id="barkThresholdValue">50</span>
-                    <span class="update-status"></span>
-                </div>
-                <div class="slider-container">
-                    <label>Bark Cooldown (sec):</label>
-                    <input type="range" id="barkCooldown" min="1" max="30" value="3">
-                    <span class="value" id="barkCooldownValue">3</span>
-                    <span class="update-status"></span>
-                </div>
+        <!-- Daily Timeline Section -->
+        <div class="timeline-section">
+            <h2>Daily Audio Timeline</h2>
+            <div class="chart-container">
+                <canvas id="timelineChart"></canvas>
             </div>
         </div>
-
-        <div id="notifications">
-            <h3>Notifications</h3>
-            <div class="notification-controls">
-                <button id="clearNotifications">Clear Notifications</button>
-                <div class="notification-filters">
-                    <label><input type="checkbox" id="showMotion" checked> Motion Events</label>
-                    <label><input type="checkbox" id="showBarks" checked> Bark Events</label>
-                </div>
-            </div>
-            <div id="notificationList"></div>
+        
+        <!-- Current Recording Section -->
+        <div class="current-recording">
+            <h2>Current Recording</h2>
+            <div id="currentRecording"></div>
         </div>
-    </div>
-
-    <!-- Add modal for media playback -->
-    <div id="mediaModal" class="modal">
-        <div class="modal-content">
-            <span class="close-modal">&times;</span>
-            <h3 id="modalTitle"></h3>
-            <div id="modalContent">
-                <video id="detectionVideo" controls style="width: 100%; display: none;">
-                    Your browser does not support the video tag.
-                </video>
-                <audio id="detectionAudio" controls style="width: 100%; display: none;">
-                    Your browser does not support the audio tag.
-                </audio>
+        
+        <!-- Recording List Section -->
+        <div class="recording-list" id="recordingList"></div>
+        
+        <!-- Settings Modal -->
+        <div id="settingsModal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Settings</h2>
+                    <span class="close" onclick="toggleSettings()">&times;</span>
+                </div>
+                <div class="modal-body">
+                    <div class="setting-group">
+                        <label for="recordingEnabled">Recording Status:</label>
+                        <select id="recordingEnabled" name="recording_enabled">
+                            <option value="true">Enabled</option>
+                            <option value="false">Disabled</option>
+                        </select>
+                        <div class="setting-info">Enable or disable audio recording</div>
+                    </div>
+                    
+                    <div class="setting-group">
+                        <label for="audioDevice">Audio Input Device:</label>
+                        <select id="audioDevice" name="audio_device"></select>
+                        <div class="setting-info">Select the microphone to use for recording</div>
+                    </div>
+                    
+                    <div class="setting-group">
+                        <label for="recordingInterval">Recording Interval (minutes):</label>
+                        <select id="recordingInterval" name="recording_interval">
+                            <option value="1">1</option>
+                            <option value="5">5</option>
+                            <option value="10">10</option>
+                            <option value="15">15</option>
+                            <option value="30">30</option>
+                            <option value="60">60</option>
+                        </select>
+                        <div class="setting-info">How long each recording should be</div>
+                    </div>
+                    
+                    <div id="settingsMessage" class="settings-message"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    <button type="button" class="btn btn-primary" onclick="saveSettings()">Save changes</button>
+                </div>
             </div>
         </div>
     </div>
 
     <script>
-        // Socket.io setup
-        const socket = io();
-        
-        // Get DOM elements
-        const videoFeed = document.getElementById('videoFeed');
-        const notificationList = document.getElementById('notificationList');
-        const toggleAudioBtn = document.getElementById('toggleAudio');
-        const clearNotificationsBtn = document.getElementById('clearNotifications');
-        const showMotion = document.getElementById('showMotion');
-        const showBarks = document.getElementById('showBarks');
-        
-        // Device selection elements
-        const videoDevice = document.getElementById('videoDevice');
-        const audioDevice = document.getElementById('audioDevice');
-        const videoStatus = document.getElementById('videoStatus');
-        const audioStatus = document.getElementById('audioStatus');
+        let audioQueue = [];
+        let currentLoads = 0;
+        const MAX_CONCURRENT_LOADS = 2;
+        let processingQueue = false;
+        const INITIAL_RETRY_DELAY = 1000;
+        const MAX_RETRY_DELAY = 30000;
+        let retryDelays = {};
+        let recordingsData = [];
 
-        // Parameter control elements
-        const motionArea = document.getElementById('motionArea');
-        const motionThreshold = document.getElementById('motionThreshold');
-        const motionCooldown = document.getElementById('motionCooldown');
-        const barkSensitivity = document.getElementById('barkSensitivity');
-        const barkDuration = document.getElementById('barkDuration');
-        const barkThreshold = document.getElementById('barkThreshold');
-        const barkCooldown = document.getElementById('barkCooldown');
-
-        // Function to update slider display value
-        function updateSliderDisplay(slider, value) {
-            slider.value = value;
-            slider.nextElementSibling.textContent = value;
-        }
-
-        // Load current parameters from server
-        fetch('/api/parameters')
-            .then(response => response.json())
-            .then(params => {
-                if (params.motion) {
-                    updateSliderDisplay(motionArea, params.motion.min_area);
-                    updateSliderDisplay(motionThreshold, params.motion.threshold);
-                    updateSliderDisplay(motionCooldown, params.motion.cooldown);
-                }
-                if (params.bark) {
-                    updateSliderDisplay(barkSensitivity, params.bark.sensitivity);
-                    updateSliderDisplay(barkDuration, params.bark.duration);
-                    updateSliderDisplay(barkThreshold, params.bark.threshold);
-                    updateSliderDisplay(barkCooldown, params.bark.cooldown);
-                }
-            })
-            .catch(error => console.error('Error loading parameters:', error));
-
-        // Handle device selection
-        videoDevice.onchange = function() {
-            socket.emit('select_video_device', {
-                device_id: parseInt(this.value)
-            });
-        };
-
-        audioDevice.onchange = function() {
-            socket.emit('select_audio_device', {
-                device_id: parseInt(this.value)
-            });
-        };
-
-        // Handle device updates
-        socket.on('device_update', function(data) {
-            const status = data.type === 'video' ? videoStatus : audioStatus;
-            const deviceSelect = data.type === 'video' ? videoDevice : audioDevice;
+        function drawWaveform(audioElement, canvasElement, levels) {
+            console.log('Drawing waveform with levels:', levels);
+            const canvas = canvasElement;
+            const ctx = canvas.getContext('2d');
             
-            // Update status message
-            status.textContent = data.status === 'success' ? 'Connected' : `Error: ${data.message}`;
-            status.className = `status ${data.status}`;
+            // Set canvas dimensions
+            canvas.width = canvas.offsetWidth * window.devicePixelRatio;
+            canvas.height = canvas.offsetHeight * window.devicePixelRatio;
+            console.log('Canvas dimensions:', canvas.width, canvas.height);
+            ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
             
-            // Update selected device if needed
-            if (data.selected_id !== undefined && deviceSelect.value != data.selected_id) {
-                deviceSelect.value = data.selected_id;
+            // Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            if (!levels || levels.length === 0) {
+                console.warn('No levels data provided for waveform');
+                return;
             }
             
-            // Clear status after 3 seconds
-            setTimeout(() => {
-                status.textContent = '';
-                status.className = 'status';
-            }, 3000);
-        });
-
-        // Function to populate device list and select saved device
-        function populateDeviceList(devices, type) {
-            const select = type === 'video' ? videoDevice : audioDevice;
-            const deviceList = type === 'video' ? devices.video_devices : devices.audio_devices;
+            // Draw background
+            ctx.fillStyle = '#f5f5f5';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
             
-            // Clear existing options
-            select.innerHTML = '';
+            if (!levels || levels.length === 0) return;
             
-            // Add devices
-            deviceList.forEach(device => {
-                const option = document.createElement('option');
-                option.value = device.id;
-                option.textContent = device.name;
-                select.appendChild(option);
+            // Draw levels
+            const barWidth = canvas.width / levels.length;
+            const maxHeight = canvas.height * 0.8; // Leave some padding
+            
+            // Create gradient for levels
+            const gradient = ctx.createLinearGradient(0, canvas.height, 0, 0);
+            gradient.addColorStop(0, 'rgba(0, 123, 255, 0.2)');   // Light blue at bottom
+            gradient.addColorStop(0.5, 'rgba(0, 123, 255, 0.4)'); // Medium blue in middle
+            gradient.addColorStop(1, 'rgba(0, 123, 255, 0.6)');   // Darker blue at top
+            
+            ctx.fillStyle = gradient;
+            
+            // Draw each level bar with smooth transitions
+            levels.forEach((level, i) => {
+                const height = level * maxHeight;
+                const x = i * barWidth;
+                const y = (canvas.height - height) / 2;
+                
+                // Draw bar with rounded top
+                ctx.beginPath();
+                ctx.moveTo(x, canvas.height - y);
+                ctx.lineTo(x + barWidth - 1, canvas.height - y);
+                ctx.lineTo(x + barWidth - 1, y + height);
+                ctx.lineTo(x, y + height);
+                ctx.closePath();
+                ctx.fill();
             });
             
-            // Get saved device ID from server
-            fetch('/api/parameters')
-                .then(response => response.json())
-                .then(params => {
-                    if (params.devices) {
-                        const savedId = type === 'video' ? params.devices.camera_id : params.devices.audio_id;
-                        if (savedId !== null) {
-                            // Check if the saved device still exists
-                            const exists = Array.from(select.options).some(opt => opt.value == savedId);
-                            if (exists) {
-                                select.value = savedId;
-                                // Trigger device selection to ensure it's active
-                                const event = new Event('change');
-                                select.dispatchEvent(event);
+            // Draw playback position marker
+            let lastMarkerX = 0;
+            audioElement.addEventListener('timeupdate', () => {
+                const position = audioElement.currentTime / audioElement.duration;
+                const x = position * canvas.width;
+                
+                // Clear previous marker
+                ctx.fillStyle = '#f5f5f5';
+                ctx.fillRect(lastMarkerX - 1, 0, 3, canvas.height);
+                
+                // Draw new marker
+                ctx.fillStyle = '#ff0000';
+                ctx.fillRect(x - 1, 0, 3, canvas.height);
+                
+                lastMarkerX = x;
+            });
+            
+            // Allow clicking on waveform to seek
+            canvas.addEventListener('click', (e) => {
+                const rect = canvas.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const position = x / rect.width;
+                audioElement.currentTime = position * audioElement.duration;
+            });
+        }
+
+        function drawMiniChart(canvas, levels) {
+            console.log('Drawing mini chart with levels:', levels);
+            
+            // Ensure the canvas is in the DOM and has dimensions
+            requestAnimationFrame(() => {
+                // Set fixed dimensions
+                const CHART_WIDTH = canvas.parentElement.offsetWidth - 8; // Account for padding
+                const CHART_HEIGHT = 22; // Match CSS height
+                
+                console.log('Using dimensions:', CHART_WIDTH, CHART_HEIGHT);
+                
+                // Set canvas dimensions
+                canvas.width = CHART_WIDTH * window.devicePixelRatio;
+                canvas.height = CHART_HEIGHT * window.devicePixelRatio;
+                canvas.style.width = CHART_WIDTH + 'px';
+                canvas.style.height = CHART_HEIGHT + 'px';
+                
+                const ctx = canvas.getContext('2d');
+                ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+                
+                // Clear canvas
+                ctx.clearRect(0, 0, CHART_WIDTH, CHART_HEIGHT);
+                
+                if (!levels || levels.length === 0) {
+                    console.warn('No levels data provided for mini chart');
+                    return;
+                }
+                
+                // Find max level for better scaling (minimum 0.2 to avoid flat lines with quiet audio)
+                const maxLevel = Math.max(0.2, ...levels);
+                console.log('Max level:', maxLevel);
+                
+                // Calculate points with adjusted scale
+                const points = levels.map((level, index) => ({
+                    x: (index / (levels.length - 1)) * CHART_WIDTH,
+                    y: CHART_HEIGHT - ((level / maxLevel) * CHART_HEIGHT)
+                }));
+                
+                // Draw line
+                ctx.beginPath();
+                ctx.moveTo(points[0].x, points[0].y);
+                
+                // Create smooth curve through points
+                for (let i = 1; i < points.length - 2; i++) {
+                    const xc = (points[i].x + points[i + 1].x) / 2;
+                    const yc = (points[i].y + points[i + 1].y) / 2;
+                    ctx.quadraticCurveTo(points[i].x, points[i].y, xc, yc);
+                }
+                
+                // For the last two points
+                if (points.length > 2) {
+                    ctx.quadraticCurveTo(
+                        points[points.length - 2].x,
+                        points[points.length - 2].y,
+                        points[points.length - 1].x,
+                        points[points.length - 1].y
+                    );
+                }
+                
+                // Style line
+                ctx.strokeStyle = 'rgb(0, 123, 255)';
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+                
+                // Fill area under line
+                ctx.lineTo(CHART_WIDTH, CHART_HEIGHT);
+                ctx.lineTo(0, CHART_HEIGHT);
+                ctx.closePath();
+                
+                // Create gradient fill
+                const gradient = ctx.createLinearGradient(0, 0, 0, CHART_HEIGHT);
+                gradient.addColorStop(0, 'rgba(0, 123, 255, 0.3)');
+                gradient.addColorStop(1, 'rgba(0, 123, 255, 0.1)');
+                ctx.fillStyle = gradient;
+                ctx.fill();
+            });
+        }
+
+        async function loadRecordingLevels(since = null) {
+            console.log('Loading recording levels since:', since);
+            try {
+                let url = '/recordings?levels_only=true';
+                if (since) {
+                    url += `&since=${encodeURIComponent(since)}`;
+                }
+                const response = await fetch(url);
+                if (response.ok) {
+                    const data = await response.json();
+                    recordingsData = data;
+                    console.log('Received recording levels:', recordingsData);
+                    updateTimelineChart();
+                    updateRecordingsList();
+                }
+            } catch (error) {
+                console.error('Error loading recording levels:', error);
+            }
+        }
+
+        function updateRecordingsList() {
+            console.log('Updating recordings list with data:', recordingsData);
+            const recordingsList = document.getElementById('recordingList');
+            recordingsList.innerHTML = '';
+            
+            recordingsData.forEach(recording => {
+                console.log('Processing recording:', recording);
+                const li = document.createElement('li');
+                li.className = 'recording-item';
+                
+                const timestamp = new Date(recording.timestamp.replace(' ', 'T'));
+                const formattedTime = timestamp.toLocaleTimeString();
+                
+                li.innerHTML = `
+                    <div class="recording-info">
+                        <span class="timestamp">${formattedTime}</span>
+                        <div class="level-indicator">
+                            <canvas class="mini-chart"></canvas>
+                        </div>
+                        <div class="audio-container">
+                            <div class="audio-player">
+                                <div class="waveform"></div>
+                                <div class="player-controls">
+                                    <button class="play-button">Play</button>
+                                    <span class="time-display">00:00 / 00:00</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="recording-controls">
+                        <button class="load-button">Load Audio</button>
+                        <span class="loading-indicator">Loading...</span>
+                    </div>
+                `;
+                
+                const miniChart = li.querySelector('.mini-chart');
+                console.log('Mini chart element:', miniChart);
+                
+                // Load detailed levels if not already loaded
+                if (!recording.detailed_levels || recording.detailed_levels.length === 0) {
+                    console.log('Loading detailed levels for:', recording.filename);
+                    const levelsUrl = `/recordings/${recording.filename.replace('.wav', '.levels.json')}`;
+                    console.log('Fetching levels from:', levelsUrl);
+                    
+                    fetch(levelsUrl)
+                        .then(response => {
+                            console.log('Levels response:', response);
+                            return response.json();
+                        })
+                        .then(levelsData => {
+                            console.log('Received levels data:', levelsData);
+                            recording.detailed_levels = levelsData.levels;
+                            drawMiniChart(miniChart, levelsData.levels);
+                        })
+                        .catch(error => {
+                            console.error('Error loading levels:', error);
+                            console.log('Falling back to simple graph with level:', recording.level);
+                            drawMiniChart(miniChart, [recording.level, recording.level]);
+                        });
+                } else {
+                    console.log('Using existing detailed levels:', recording.detailed_levels);
+                    drawMiniChart(miniChart, recording.detailed_levels);
+                }
+                
+                const loadButton = li.querySelector('.load-button');
+                const waveformContainer = li.querySelector('.waveform');
+                const playButton = li.querySelector('.play-button');
+                const timeDisplay = li.querySelector('.time-display');
+                
+                loadButton.addEventListener('click', async () => {
+                    li.classList.add('loading');
+                    loadButton.disabled = true;
+                    
+                    try {
+                        // Create WaveSurfer instance
+                        const wavesurfer = WaveSurfer.create({
+                            container: waveformContainer,
+                            waveColor: '#4a9eff',
+                            progressColor: '#0056b3',
+                            cursorColor: '#333',
+                            barWidth: 2,
+                            barGap: 1,
+                            height: 60,
+                            normalize: true,
+                            backend: 'WebAudio'
+                        });
+
+                        // Load audio file
+                        await wavesurfer.load(`/recordings/${recording.filename}`);
+                        
+                        // Update UI once loaded
+                        li.classList.remove('loading');
+                        li.classList.add('loaded');
+                        
+                        // Handle play/pause
+                        playButton.addEventListener('click', () => {
+                            wavesurfer.playPause();
+                            playButton.textContent = wavesurfer.isPlaying() ? 'Pause' : 'Play';
+                        });
+                        
+                        // Update time display
+                        const formatTime = t => {
+                            const minutes = Math.floor(t / 60);
+                            const seconds = Math.floor(t % 60);
+                            return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+                        };
+                        
+                        wavesurfer.on('audioprocess', () => {
+                            const currentTime = wavesurfer.getCurrentTime();
+                            const duration = wavesurfer.getDuration();
+                            timeDisplay.textContent = `${formatTime(currentTime)} / ${formatTime(duration)}`;
+                        });
+                        
+                        wavesurfer.on('finish', () => {
+                            playButton.textContent = 'Play';
+                        });
+                        
+                    } catch (error) {
+                        console.error('Error loading audio:', error);
+                        li.classList.remove('loading');
+                        loadButton.disabled = false;
+                        loadButton.textContent = 'Retry Loading';
+                    }
+                });
+                
+                recordingsList.appendChild(li);
+            });
+        }
+
+        function updateTimelineChart() {
+            console.log('Updating timeline chart with data:', recordingsData);
+            const ctx = document.getElementById('timelineChart').getContext('2d');
+            
+            // Create start and end of current day
+            const now = new Date();
+            const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+            const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+            
+            if (!recordingsData || recordingsData.length === 0) {
+                if (window.timelineChart && window.timelineChart.destroy) {
+                    window.timelineChart.destroy();
+                }
+                window.timelineChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        datasets: [{
+                            label: 'Audio Level',
+                            data: [],
+                            borderColor: 'rgb(75, 192, 192)',
+                            tension: 0.1
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        scales: {
+                            x: {
+                                type: 'time',
+                                time: {
+                                    unit: 'hour',
+                                    displayFormats: {
+                                        hour: 'HH:mm'
+                                    }
+                                },
+                                min: startOfDay.valueOf(),
+                                max: endOfDay.valueOf(),
+                                title: {
+                                    display: true,
+                                    text: 'Time'
+                                }
+                            },
+                            y: {
+                                beginAtZero: true,
+                                max: 1,
+                                title: {
+                                    display: true,
+                                    text: 'Audio Level'
+                                }
                             }
                         }
                     }
-                })
-                .catch(error => console.error('Error loading device settings:', error));
-        }
-
-        // Fetch and populate device lists
-        fetch('/api/devices')
-            .then(response => response.json())
-            .then(devices => {
-                populateDeviceList(devices, 'video');
-                populateDeviceList(devices, 'audio');
-            })
-            .catch(error => console.error('Error loading devices:', error));
-
-        // Function to show parameter update status
-        function showUpdateStatus(element, success, message = '') {
-            const status = element.parentNode.querySelector('.update-status');
-            status.textContent = message;
-            status.className = `update-status show ${success ? 'success' : 'error'}`;
-            
-            // Clear status after 2 seconds
-            setTimeout(() => {
-                status.className = 'update-status';
-            }, 2000);
-        }
-
-        // Handle parameter updates confirmation
-        socket.on('params_updated', function(data) {
-            const isSuccess = !data.status || data.status !== 'error';
-            const message = isSuccess ? '' : data.message;
-            
-            if (data.type === 'motion') {
-                if (data.values.min_area !== undefined) {
-                    showUpdateStatus(motionArea, isSuccess, message);
-                }
-                if (data.values.threshold !== undefined) {
-                    showUpdateStatus(motionThreshold, isSuccess, message);
-                }
-                if (data.values.cooldown !== undefined) {
-                    showUpdateStatus(motionCooldown, isSuccess, message);
-                }
-            } else if (data.type === 'bark') {
-                if (data.values.sensitivity !== undefined) {
-                    showUpdateStatus(barkSensitivity, isSuccess, message);
-                }
-                if (data.values.duration !== undefined) {
-                    showUpdateStatus(barkDuration, isSuccess, message);
-                }
-                if (data.values.threshold !== undefined) {
-                    showUpdateStatus(barkThreshold, isSuccess, message);
-                }
-                if (data.values.cooldown !== undefined) {
-                    showUpdateStatus(barkCooldown, isSuccess, message);
-                }
-            }
-        });
-
-        // Update motion detection parameters with debounce
-        let motionUpdateTimeout;
-        function updateMotionParams() {
-            clearTimeout(motionUpdateTimeout);
-            motionUpdateTimeout = setTimeout(() => {
-                socket.emit('update_motion_params', {
-                    min_area: parseInt(motionArea.value),
-                    threshold: parseInt(motionThreshold.value),
-                    cooldown: parseInt(motionCooldown.value)
                 });
-            }, 300);  // Wait 300ms after last change before sending update
-        }
-
-        // Update bark detection parameters with debounce
-        let barkUpdateTimeout;
-        function updateBarkParams() {
-            clearTimeout(barkUpdateTimeout);
-            barkUpdateTimeout = setTimeout(() => {
-                socket.emit('update_bark_params', {
-                    sensitivity: parseInt(barkSensitivity.value),
-                    duration: parseInt(barkDuration.value),
-                    threshold: parseInt(barkThreshold.value),
-                    cooldown: parseInt(barkCooldown.value)
-                });
-            }, 300);  // Wait 300ms after last change before sending update
-        }
-
-        // Attach update handlers to all sliders
-        [motionArea, motionThreshold, motionCooldown].forEach(slider => {
-            slider.oninput = function() {
-                this.nextElementSibling.textContent = this.value;
-                updateMotionParams();
-            };
-        });
-
-        [barkSensitivity, barkDuration, barkThreshold, barkCooldown].forEach(slider => {
-            slider.oninput = function() {
-                this.nextElementSibling.textContent = this.value;
-                updateBarkParams();
-            };
-        });
-
-        // Modal handling
-        const modal = document.getElementById('mediaModal');
-        const modalVideo = document.getElementById('detectionVideo');
-        const modalAudio = document.getElementById('detectionAudio');
-        const modalTitle = document.getElementById('modalTitle');
-        const closeModal = document.querySelector('.close-modal');
-        
-        let currentMedia = null;
-        
-        function stopCurrentMedia() {
-            if (currentMedia) {
-                try {
-                    currentMedia.pause();
-                    currentMedia.currentTime = 0;
-                    currentMedia.src = '';
-                } catch (e) {
-                    console.error('Error stopping media:', e);
-                }
-                currentMedia = null;
+                return;
             }
-        }
-        
-        modal.addEventListener('hidden.bs.modal', function () {
-            stopCurrentMedia();
-        });
 
-        async function playMedia(type, filename) {
-            try {
-                // Stop any currently playing media
-                stopCurrentMedia();
+            // Filter recordings for current day only
+            const todayRecordings = recordingsData.filter(recording => {
+                const recordingDate = new Date(recording.timestamp);
+                return recordingDate >= startOfDay && recordingDate <= endOfDay;
+            });
+
+            // Sort recordings by timestamp
+            const sortedRecordings = todayRecordings.sort((a, b) => 
+                new Date(a.timestamp) - new Date(b.timestamp)
+            );
+
+            // Create timeline data points
+            let timelineData = [];
+
+            sortedRecordings.forEach(recording => {
+                const timestamp = new Date(recording.timestamp);
                 
-                // Show the correct container and hide the other
-                document.getElementById('detectionVideo').style.display = type === 'video' ? 'block' : 'none';
-                document.getElementById('detectionAudio').style.display = type === 'audio' ? 'block' : 'none';
-                
-                // Get the media element
-                const mediaElement = type === 'video' ? 
-                    document.getElementById('detectionVideo') : 
-                    document.getElementById('detectionAudio');
-                
-                // Set the source
-                const source = type === 'video' ? 
-                    `/recordings/video/${filename}` : 
-                    `/recordings/audio/${filename}`;
-                
-                // Show modal first
-                modal.style.display = "block";
-                
-                // Wait for modal transition
-                await new Promise(resolve => setTimeout(resolve, 500));
-                
-                // Set source and load
-                mediaElement.src = source;
-                await mediaElement.load();
-                
-                // Store current media
-                currentMedia = mediaElement;
-                
-                // Play after a short delay
-                setTimeout(async () => {
-                    try {
-                        await mediaElement.play();
-                    } catch (e) {
-                        console.error('Error playing media:', e);
+                if (recording.detailed_levels && recording.detailed_levels.length > 0) {
+                    // Use detailed levels data
+                    const duration = recording.duration || 60; // Default to 60 seconds if not specified
+                    const timeStep = duration / recording.detailed_levels.length;
+                    
+                    recording.detailed_levels.forEach((level, index) => {
+                        const pointTime = new Date(timestamp.getTime() + (index * timeStep * 1000));
+                        if (pointTime >= startOfDay && pointTime <= endOfDay) {
+                            timelineData.push({
+                                x: pointTime,
+                                y: level
+                            });
+                        }
+                    });
+                } else {
+                    // Fallback to overall level
+                    timelineData.push({
+                        x: timestamp,
+                        y: recording.level
+                    });
+                }
+            });
+
+            // Create or update chart
+            if (window.timelineChart && window.timelineChart.destroy) {
+                window.timelineChart.destroy();
+            }
+
+            window.timelineChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: [{
+                        label: 'Audio Level',
+                        data: timelineData,
+                        borderColor: 'rgb(75, 192, 192)',
+                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                        tension: 0.2,
+                        fill: true,
+                        spanGaps: false // Don't connect gaps in data
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'hour',
+                                displayFormats: {
+                                    hour: 'HH:mm'
+                                }
+                            },
+                            min: startOfDay.valueOf(),
+                            max: endOfDay.valueOf(),
+                            title: {
+                                display: true,
+                                text: 'Time'
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            max: 1,
+                            title: {
+                                display: true,
+                                text: 'Audio Level'
+                            }
+                        }
+                    },
+                    plugins: {
+                        tooltip: {
+                            callbacks: {
+                                title: function(context) {
+                                    const date = new Date(context[0].parsed.x);
+                                    return date.toLocaleTimeString();
+                                }
+                            }
+                        }
                     }
-                }, 100);
-                
-            } catch (error) {
-                console.error('Error playing media:', error);
-                alert('Error playing media. Please try again.');
-            }
-        }
-        
-        closeModal.onclick = function() {
-            modal.style.display = "none";
-            stopCurrentMedia();
-        }
-        
-        window.onclick = function(event) {
-            if (event.target == modal) {
-                closeModal.onclick();
-            }
-        }
-        
-        // Handle notifications
-        socket.on('notification', function(data) {
-            const notification = document.createElement('div');
-            notification.className = `notification ${data.type || 'motion'}`;
-            
-            // Create timestamp and message
-            const timestamp = new Date().toLocaleTimeString();
-            let content = `${timestamp}: ${data.message}`;
-            
-            // Add media links if available
-            if (data.type === 'motion' && data.data && data.data.video) {
-                content += `<span class="media-link" onclick="playMedia('video', '${data.data.video}')">View Recording</span>`;
-            }
-            if (data.type === 'bark' && data.data && data.data.audio) {
-                content += `<span class="media-link" onclick="playMedia('audio', '${data.data.audio}')">Play Audio</span>`;
-            }
-            
-            notification.innerHTML = content;
-            
-            // Check if notification should be shown based on filters
-            const shouldShow = (data.type === 'bark' && showBarks.checked) ||
-                             (data.type === 'motion' && showMotion.checked);
-            
-            if (shouldShow) {
-                notificationList.insertBefore(notification, notificationList.firstChild);
-            }
-        });
-
-        // Filter existing notifications when checkboxes change
-        function updateNotificationVisibility() {
-            const notifications = notificationList.getElementsByClassName('notification');
-            Array.from(notifications).forEach(notification => {
-                if (notification.classList.contains('bark')) {
-                    notification.style.display = showBarks.checked ? 'block' : 'none';
-                } else if (notification.classList.contains('motion')) {
-                    notification.style.display = showMotion.checked ? 'block' : 'none';
                 }
             });
         }
 
-        showMotion.onchange = updateNotificationVisibility;
-        showBarks.onchange = updateNotificationVisibility;
-
-        // Clear notifications
-        clearNotificationsBtn.onclick = function() {
-            notificationList.innerHTML = '';
-        };
-
-        // Handle video feed
-        socket.on('video_frame', function(data) {
-            videoFeed.src = 'data:image/jpeg;base64,' + data.frame;
-        });
-
-        // Audio toggle
-        let audioEnabled = true;
-        toggleAudioBtn.onclick = function() {
-            audioEnabled = !audioEnabled;
-            socket.emit('toggle_audio', { enabled: audioEnabled });
-            this.textContent = audioEnabled ? 'Disable Audio' : 'Enable Audio';
-        };
+        // Initial load
+        loadRecordingLevels();
+        
+        // Refresh data periodically
+        setInterval(() => {
+            const lastTimestamp = recordingsData[0]?.timestamp;
+            if (lastTimestamp) {
+                loadRecordingLevels(lastTimestamp);
+            }
+        }, 60000); // Update every minute
     </script>
 </body>
 </html>
