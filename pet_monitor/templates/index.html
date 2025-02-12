@@ -53,75 +53,6 @@
             margin: 20px 0;
         }
         
-        /* Current Recording Section */
-        .current-recording {
-            margin: 20px 0;
-            padding: 20px;
-            background: white;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-        }
-        
-        .recording-status {
-            background: #f8f9fa;
-            padding: 15px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-        }
-        
-        .recording-period {
-            font-size: 0.9em;
-            color: #666;
-            margin-bottom: 8px;
-        }
-        
-        .recording-duration {
-            font-size: 0.8em;
-            color: #888;
-            font-weight: 500;
-        }
-        
-        .recording-indicator {
-            display: inline-block;
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            background-color: #4CAF50;
-            margin-right: 8px;
-            animation: pulse 2s infinite;
-        }
-        
-        @keyframes pulse {
-            0% { opacity: 1; }
-            50% { opacity: 0.3; }
-            100% { opacity: 1; }
-        }
-        
-        .audio-clip {
-            background: #f8f9fa;
-            padding: 15px;
-            border-radius: 8px;
-            margin-bottom: 10px;
-        }
-        
-        .audio-clip-info {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 10px;
-        }
-        
-        .audio-clip-time {
-            font-size: 0.9em;
-            color: #666;
-        }
-        
-        .audio-clip-duration {
-            font-size: 0.8em;
-            color: #888;
-            font-weight: 500;
-        }
-        
         /* Recording List */
         .recording-list {
             margin: 20px 0;
@@ -382,6 +313,62 @@
         .loading .load-button {
             display: none;
         }
+        
+        /* Status Section */
+        .status-section {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background-color: #dc3545;
+            position: relative;
+        }
+
+        .status-indicator.recording {
+            background-color: #28a745;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% {
+                box-shadow: 0 0 0 0 rgba(40, 167, 69, 0.7);
+            }
+            70% {
+                box-shadow: 0 0 0 10px rgba(40, 167, 69, 0);
+            }
+            100% {
+                box-shadow: 0 0 0 0 rgba(40, 167, 69, 0);
+            }
+        }
+
+        .status-text {
+            flex: 1;
+        }
+
+        .status-text .title {
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+
+        .status-text .details {
+            color: #666;
+            font-size: 14px;
+        }
+
+        .status-text .time-remaining {
+            color: #0056b3;
+            font-weight: 500;
+        }
     </style>
 </head>
 <body>
@@ -392,18 +379,20 @@
             <button class="settings-button" onclick="toggleSettings()">Settings</button>
         </div>
         
+        <div class="status-section">
+            <div id="statusIndicator" class="status-indicator"></div>
+            <div class="status-text">
+                <div class="title" id="statusTitle">Initializing...</div>
+                <div class="details" id="statusDetails"></div>
+            </div>
+        </div>
+        
         <!-- Daily Timeline Section -->
         <div class="timeline-section">
             <h2>Daily Audio Timeline</h2>
             <div class="chart-container">
                 <canvas id="timelineChart"></canvas>
             </div>
-        </div>
-        
-        <!-- Current Recording Section -->
-        <div class="current-recording">
-            <h2>Current Recording</h2>
-            <div id="currentRecording"></div>
         </div>
         
         <!-- Recording List Section -->
@@ -419,10 +408,7 @@
                 <div class="modal-body">
                     <div class="setting-group">
                         <label for="recordingEnabled">Recording Status:</label>
-                        <select id="recordingEnabled" name="recording_enabled">
-                            <option value="true">Enabled</option>
-                            <option value="false">Disabled</option>
-                        </select>
+                        <input type="checkbox" id="recordingEnabled" name="recording_enabled">
                         <div class="setting-info">Enable or disable audio recording</div>
                     </div>
                     
@@ -623,152 +609,26 @@
         }
 
         async function loadRecordingLevels(since = null) {
-            console.log('Loading recording levels since:', since);
-            try {
-                let url = '/recordings?levels_only=true';
-                if (since) {
-                    url += `&since=${encodeURIComponent(since)}`;
-                }
-                const response = await fetch(url);
-                if (response.ok) {
-                    const data = await response.json();
-                    recordingsData = data;
-                    console.log('Received recording levels:', recordingsData);
-                    updateTimelineChart();
-                    updateRecordingsList();
-                }
-            } catch (error) {
-                console.error('Error loading recording levels:', error);
+            let url = '/recordings?levels_only=true';
+            if (since) {
+                url += `&since=${encodeURIComponent(since)}`;
             }
-        }
-
-        function updateRecordingsList() {
-            console.log('Updating recordings list with data:', recordingsData);
-            const recordingsList = document.getElementById('recordingList');
-            recordingsList.innerHTML = '';
             
-            recordingsData.forEach(recording => {
-                console.log('Processing recording:', recording);
-                const li = document.createElement('li');
-                li.className = 'recording-item';
-                
-                const timestamp = new Date(recording.timestamp.replace(' ', 'T'));
-                const formattedTime = timestamp.toLocaleTimeString();
-                
-                li.innerHTML = `
-                    <div class="recording-info">
-                        <span class="timestamp">${formattedTime}</span>
-                        <div class="level-indicator">
-                            <canvas class="mini-chart"></canvas>
-                        </div>
-                        <div class="audio-container">
-                            <div class="audio-player">
-                                <div class="waveform"></div>
-                                <div class="player-controls">
-                                    <button class="play-button">Play</button>
-                                    <span class="time-display">00:00 / 00:00</span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="recording-controls">
-                        <button class="load-button">Load Audio</button>
-                        <span class="loading-indicator">Loading...</span>
-                    </div>
-                `;
-                
-                const miniChart = li.querySelector('.mini-chart');
-                console.log('Mini chart element:', miniChart);
-                
-                // Load detailed levels if not already loaded
-                if (!recording.detailed_levels || recording.detailed_levels.length === 0) {
-                    console.log('Loading detailed levels for:', recording.filename);
-                    const levelsUrl = `/recordings/${recording.filename.replace('.wav', '.levels.json')}`;
-                    console.log('Fetching levels from:', levelsUrl);
-                    
-                    fetch(levelsUrl)
-                        .then(response => {
-                            console.log('Levels response:', response);
-                            return response.json();
-                        })
-                        .then(levelsData => {
-                            console.log('Received levels data:', levelsData);
-                            recording.detailed_levels = levelsData.levels;
-                            drawMiniChart(miniChart, levelsData.levels);
-                        })
-                        .catch(error => {
-                            console.error('Error loading levels:', error);
-                            console.log('Falling back to simple graph with level:', recording.level);
-                            drawMiniChart(miniChart, [recording.level, recording.level]);
-                        });
-                } else {
-                    console.log('Using existing detailed levels:', recording.detailed_levels);
-                    drawMiniChart(miniChart, recording.detailed_levels);
-                }
-                
-                const loadButton = li.querySelector('.load-button');
-                const waveformContainer = li.querySelector('.waveform');
-                const playButton = li.querySelector('.play-button');
-                const timeDisplay = li.querySelector('.time-display');
-                
-                loadButton.addEventListener('click', async () => {
-                    li.classList.add('loading');
-                    loadButton.disabled = true;
-                    
-                    try {
-                        // Create WaveSurfer instance
-                        const wavesurfer = WaveSurfer.create({
-                            container: waveformContainer,
-                            waveColor: '#4a9eff',
-                            progressColor: '#0056b3',
-                            cursorColor: '#333',
-                            barWidth: 2,
-                            barGap: 1,
-                            height: 60,
-                            normalize: true,
-                            backend: 'WebAudio'
-                        });
-
-                        // Load audio file
-                        await wavesurfer.load(`/recordings/${recording.filename}`);
-                        
-                        // Update UI once loaded
-                        li.classList.remove('loading');
-                        li.classList.add('loaded');
-                        
-                        // Handle play/pause
-                        playButton.addEventListener('click', () => {
-                            wavesurfer.playPause();
-                            playButton.textContent = wavesurfer.isPlaying() ? 'Pause' : 'Play';
-                        });
-                        
-                        // Update time display
-                        const formatTime = t => {
-                            const minutes = Math.floor(t / 60);
-                            const seconds = Math.floor(t % 60);
-                            return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-                        };
-                        
-                        wavesurfer.on('audioprocess', () => {
-                            const currentTime = wavesurfer.getCurrentTime();
-                            const duration = wavesurfer.getDuration();
-                            timeDisplay.textContent = `${formatTime(currentTime)} / ${formatTime(duration)}`;
-                        });
-                        
-                        wavesurfer.on('finish', () => {
-                            playButton.textContent = 'Play';
-                        });
-                        
-                    } catch (error) {
-                        console.error('Error loading audio:', error);
-                        li.classList.remove('loading');
-                        loadButton.disabled = false;
-                        loadButton.textContent = 'Retry Loading';
-                    }
+            fetch(url)
+                .then(response => response.json())
+                .then(data => {
+                    console.log('Received recordings data:', data);
+                    // Merge new recordings with existing ones
+                    const newRecordings = data.filter(recording => 
+                        !recordingsData.some(existing => existing.filename === recording.filename)
+                    );
+                    recordingsData = [...recordingsData, ...newRecordings];
+                    updateRecordingsList();
+                    updateTimelineChart();
+                })
+                .catch(error => {
+                    console.error('Error loading recordings:', error);
                 });
-                
-                recordingsList.appendChild(li);
-            });
         }
 
         function updateTimelineChart() {
@@ -927,16 +787,361 @@
             });
         }
 
-        // Initial load
-        loadRecordingLevels();
-        
-        // Refresh data periodically
+        function toggleSettings() {
+            const settingsPanel = document.getElementById('settingsModal');
+            const settingsButton = document.querySelector('.settings-button');
+            const isVisible = settingsPanel.style.display === 'block';
+            
+            settingsPanel.style.display = isVisible ? 'none' : 'block';
+            settingsButton.textContent = isVisible ? '⚙️ Settings' : '✕ Close';
+            settingsButton.style.backgroundColor = isVisible ? '#007bff' : '#dc3545';
+        }
+
+        async function loadAudioDevices() {
+            try {
+                const deviceSelect = document.getElementById('audioDevice');
+                deviceSelect.innerHTML = '<option value="">Loading devices...</option>';
+                
+                // Load current settings first
+                const settingsResponse = await fetch('/settings');
+                if (!settingsResponse.ok) throw new Error('Failed to load settings');
+                const settings = await settingsResponse.json();
+                
+                // Then load devices
+                const response = await fetch('/audio_devices');
+                if (!response.ok) throw new Error('Failed to load audio devices');
+                const devices = await response.json();
+                
+                deviceSelect.innerHTML = '';
+                devices.forEach(device => {
+                    const option = document.createElement('option');
+                    option.value = device.index;
+                    option.textContent = `${device.name} (${device.channels} channels)`;
+                    deviceSelect.appendChild(option);
+                });
+                
+                // Set current values
+                if (settings.audio_device !== undefined) {
+                    deviceSelect.value = settings.audio_device;
+                }
+                if (settings.recording_interval !== undefined) {
+                    document.getElementById('recordingInterval').value = settings.recording_interval;
+                }
+                
+            } catch (error) {
+                console.error('Error loading audio devices:', error);
+                deviceSelect.innerHTML = '<option value="">Error loading devices</option>';
+            }
+        }
+
+        async function loadSettings() {
+            try {
+                const response = await fetch('/settings');
+                if (response.ok) {
+                    const settings = await response.json();
+                    document.getElementById('recordingEnabled').checked = settings.recording_enabled;
+                    document.getElementById('recordingInterval').value = settings.recording_interval;
+                    
+                    // Audio device will be set when devices are loaded
+                    const audioDeviceSelect = document.getElementById('audioDevice');
+                    const selectedDevice = settings.audio_device;
+                    if (selectedDevice !== null) {
+                        // Wait for devices to load if they haven't yet
+                        if (audioDeviceSelect.options.length === 0) {
+                            await loadAudioDevices();
+                        }
+                        audioDeviceSelect.value = selectedDevice;
+                    }
+                }
+            } catch (error) {
+                console.error('Error loading settings:', error);
+            }
+        }
+
+        async function saveSettings() {
+            const audioDevice = document.getElementById('audioDevice').value;
+            const recordingInterval = document.getElementById('recordingInterval').value;
+            const recordingEnabled = document.getElementById('recordingEnabled').checked;
+            
+            if (!audioDevice) {
+                alert('Please select an audio device');
+                return;
+            }
+            
+            if (!recordingInterval || recordingInterval < 1 || recordingInterval > 60) {
+                alert('Recording interval must be between 1 and 60 minutes');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/settings', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        audio_device: parseInt(audioDevice),
+                        recording_interval: parseInt(recordingInterval),
+                        recording_enabled: recordingEnabled
+                    })
+                });
+                
+                if (response.ok) {
+                    alert('Settings saved successfully!');
+                    toggleSettings();  // Close settings panel
+                    updateStatus();  // Update status immediately
+                } else {
+                    const error = await response.text();
+                    throw new Error(error);
+                }
+            } catch (error) {
+                console.error('Error saving settings:', error);
+                alert('Error saving settings: ' + error.message);
+            }
+        }
+
+        // Load settings when panel is opened
+        document.querySelector('.settings-button').addEventListener('click', async () => {
+            await loadSettings();
+            await loadAudioDevices();
+        });
+
+        function updateStatus() {
+            fetch('/status')
+                .then(response => response.json())
+                .then(data => {
+                    const statusIndicator = document.getElementById('statusIndicator');
+                    const statusTitle = document.getElementById('statusTitle');
+                    const statusDetails = document.getElementById('statusDetails');
+                    
+                    // Update indicator and title
+                    if (data.recording_enabled) {
+                        statusIndicator.classList.add('recording');
+                        statusTitle.textContent = 'Recording Active';
+                        
+                        // Calculate time range if we have start_time
+                        if (data.current_recording && data.current_recording.start_time) {
+                            const startTime = new Date(data.current_recording.start_time);
+                            const endTime = new Date(startTime.getTime() + (data.recording_interval * 60000));
+                            const now = new Date();
+                            const remainingMinutes = Math.max(0, Math.floor((endTime - now) / 60000));
+                            
+                            const formatTime = (date) => {
+                                return date.toLocaleTimeString('en-US', {
+                                    hour: 'numeric',
+                                    minute: '2-digit',
+                                    hour12: true
+                                }).toLowerCase().replace(':', '.');
+                            };
+                            
+                            statusDetails.innerHTML = `
+                                ${data.recording_interval} minute recording<br>
+                                ${formatTime(startTime)} - ${formatTime(endTime)}<br>
+                                <span class="time-remaining">${remainingMinutes} minutes remaining</span>
+                            `;
+                        } else {
+                            statusDetails.textContent = `Starting new ${data.recording_interval}-minute recording...`;
+                        }
+                    } else {
+                        statusIndicator.classList.remove('recording');
+                        statusTitle.textContent = 'Recording Disabled';
+                        statusDetails.textContent = 'Enable recording in settings to start monitoring';
+                    }
+                })
+                .catch(error => {
+                    console.error('Error updating status:', error);
+                    const statusTitle = document.getElementById('statusTitle');
+                    statusTitle.textContent = 'Error getting status';
+                });
+        }
+
+        // Update status every 5 seconds
+        setInterval(updateStatus, 5000);
+        updateStatus(); // Initial update
+
+        function updateRecordingsList() {
+            console.log('Updating recordings list with data:', recordingsData);
+            const recordingsList = document.getElementById('recordingList');
+            
+            // Get existing recordings to check for new ones
+            const existingRecordings = new Set(Array.from(recordingsList.children).map(li => {
+                const loadButton = li.querySelector('.load-button');
+                return loadButton ? loadButton.getAttribute('data-filename') : null;
+            }).filter(Boolean));
+            
+            // Sort recordings by timestamp, newest first
+            const sortedRecordings = [...recordingsData].sort((a, b) => {
+                return new Date(b.timestamp) - new Date(a.timestamp);
+            });
+            
+            // Add new recordings
+            sortedRecordings.forEach(recording => {
+                // Skip if we already have this recording
+                if (existingRecordings.has(recording.filename)) {
+                    return;
+                }
+                
+                console.log('Adding new recording:', recording);
+                const li = document.createElement('li');
+                li.className = 'recording-item';
+                
+                const startTime = new Date(recording.timestamp.replace(' ', 'T'));
+                const endTime = new Date(startTime.getTime() + (recording.duration * 1000));
+                
+                const formatTime = (date) => {
+                    return date.toLocaleTimeString('en-US', {
+                        hour: 'numeric',
+                        minute: '2-digit',
+                        hour12: true
+                    }).toLowerCase().replace(':', '.');
+                };
+                
+                const timeRange = `${formatTime(startTime)} - ${formatTime(endTime)}`;
+                
+                li.innerHTML = `
+                    <div class="recording-info">
+                        <span class="timestamp">${timeRange}</span>
+                        <div class="level-indicator">
+                            <canvas class="mini-chart"></canvas>
+                        </div>
+                        <div class="audio-container">
+                            <div class="audio-player">
+                                <div class="waveform"></div>
+                                <div class="player-controls">
+                                    <button class="play-button">Play</button>
+                                    <span class="time-display">00:00 / 00:00</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="recording-controls">
+                        <button class="load-button" data-filename="${recording.filename}">Load Audio</button>
+                        <span class="loading-indicator">Loading...</span>
+                    </div>
+                `;
+                
+                const miniChart = li.querySelector('.mini-chart');
+                console.log('Mini chart element:', miniChart);
+                
+                // Load detailed levels if not already loaded
+                if (!recording.detailed_levels || recording.detailed_levels.length === 0) {
+                    console.log('Loading detailed levels for:', recording.filename);
+                    const levelsUrl = `/recordings/${recording.filename.replace('.wav', '.levels.json')}`;
+                    console.log('Fetching levels from:', levelsUrl);
+                    
+                    fetch(levelsUrl)
+                        .then(response => {
+                            console.log('Levels response:', response);
+                            return response.json();
+                        })
+                        .then(levelsData => {
+                            console.log('Received levels data:', levelsData);
+                            recording.detailed_levels = levelsData.levels;
+                            drawMiniChart(miniChart, levelsData.levels);
+                        })
+                        .catch(error => {
+                            console.error('Error loading levels:', error);
+                            console.log('Falling back to simple graph with level:', recording.level);
+                            drawMiniChart(miniChart, [recording.level, recording.level]);
+                        });
+                } else {
+                    console.log('Using existing detailed levels:', recording.detailed_levels);
+                    drawMiniChart(miniChart, recording.detailed_levels);
+                }
+                
+                const loadButton = li.querySelector('.load-button');
+                const waveformContainer = li.querySelector('.waveform');
+                const playButton = li.querySelector('.play-button');
+                const timeDisplay = li.querySelector('.time-display');
+                
+                loadButton.addEventListener('click', async () => {
+                    li.classList.add('loading');
+                    loadButton.disabled = true;
+                    
+                    try {
+                        // Create WaveSurfer instance
+                        const wavesurfer = WaveSurfer.create({
+                            container: waveformContainer,
+                            waveColor: '#4a9eff',
+                            progressColor: '#0056b3',
+                            cursorColor: '#333',
+                            barWidth: 2,
+                            barGap: 1,
+                            height: 60,
+                            normalize: true,
+                            backend: 'WebAudio'
+                        });
+
+                        // Load audio file
+                        await wavesurfer.load(`/recordings/${recording.filename}`);
+                        
+                        // Update UI once loaded
+                        li.classList.remove('loading');
+                        li.classList.add('loaded');
+                        
+                        // Handle play/pause
+                        playButton.addEventListener('click', () => {
+                            wavesurfer.playPause();
+                            playButton.textContent = wavesurfer.isPlaying() ? 'Pause' : 'Play';
+                        });
+                        
+                        // Update time display
+                        const formatTime = t => {
+                            const minutes = Math.floor(t / 60);
+                            const seconds = Math.floor(t % 60);
+                            return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+                        };
+                        
+                        wavesurfer.on('audioprocess', () => {
+                            const currentTime = wavesurfer.getCurrentTime();
+                            const duration = wavesurfer.getDuration();
+                            timeDisplay.textContent = `${formatTime(currentTime)} / ${formatTime(duration)}`;
+                        });
+                        
+                        wavesurfer.on('finish', () => {
+                            playButton.textContent = 'Play';
+                        });
+                        
+                    } catch (error) {
+                        console.error('Error loading audio:', error);
+                        li.classList.remove('loading');
+                        loadButton.disabled = false;
+                        loadButton.textContent = 'Retry Loading';
+                    }
+                });
+                
+                // Append to the list (newest will be first since we sorted the data)
+                recordingsList.appendChild(li);
+            });
+        }
+
+        // Update recordings list every 10 seconds
         setInterval(() => {
-            const lastTimestamp = recordingsData[0]?.timestamp;
+            const lastTimestamp = recordingsData.length > 0 ? 
+                recordingsData.reduce((latest, recording) => {
+                    const recordingTime = new Date(recording.timestamp);
+                    const latestTime = new Date(latest.replace(' ', 'T'));
+                    return recordingTime > latestTime ? recording.timestamp : latest;
+                }, recordingsData[0].timestamp) : 
+                null;
+            
             if (lastTimestamp) {
                 loadRecordingLevels(lastTimestamp);
             }
-        }, 60000); // Update every minute
+        }, 10000);
+
+        function loadAll() {
+            // Clear existing recordings
+            recordingsData = [];
+            const recordingsList = document.getElementById('recordingList');
+            recordingsList.innerHTML = '';
+            
+            // Load all recordings from scratch
+            loadRecordingLevels();
+        }
+
+        // Load initial recordings data
+        loadRecordingLevels();
     </script>
 </body>
 </html>

@@ -145,6 +145,7 @@ class AudioMonitor:
         # Initialize state
         self.running = False
         self.current_recording = None
+        self.current_recording_start = None
         self.recordings = []
         self.load_existing_recordings()
         
@@ -379,6 +380,7 @@ class AudioMonitor:
             
             # Initialize current recording
             timestamp = datetime.datetime.now()
+            self.current_recording_start = timestamp
             self.current_recording = {
                 'timestamp': timestamp.strftime("%Y-%m-%d %H:%M:%S"),
                 'status': 'recording',
@@ -407,6 +409,18 @@ class AudioMonitor:
     def cleanup(self):
         """Clean up resources"""
         self.running = False
+
+    def get_recordings(self):
+        recordings = []
+        for recording in self.recordings:
+            recording_data = {
+                'filename': recording['filename'],
+                'timestamp': recording['timestamp'],
+                'level': recording.get('level', 0),
+                'duration': recording.get('duration', self.settings.settings['recording_interval'] * 60)  # Convert minutes to seconds
+            }
+            recordings.append(recording_data)
+        return recordings
 
 # Create global monitor instance
 monitor = None
@@ -452,7 +466,7 @@ def get_recordings():
             for filename, data in levels.items()
         ]
     else:
-        recordings = monitor.recordings
+        recordings = monitor.get_recordings()
         
         # Filter recordings after the given timestamp
         if since:
@@ -535,15 +549,26 @@ def serve_recording(filename):
 
 @app.route('/status')
 def get_status():
-    if monitor:
-        return jsonify({
-            'recording': monitor.current_recording,
-            'is_running': monitor.running
-        })
-    return jsonify({
-        'recording': None,
-        'is_running': False
-    })
+    if not monitor:
+        return jsonify({'error': 'Monitor not initialized'}), 500
+
+    try:
+        status = {
+            'recording_enabled': monitor.settings.settings['recording_enabled'],
+            'recording_interval': monitor.settings.settings['recording_interval'],
+            'current_recording': None
+        }
+
+        if monitor.current_recording:
+            status['current_recording'] = {
+                'filename': monitor.current_recording,
+                'start_time': monitor.current_recording_start.strftime('%Y-%m-%d %H:%M:%S') if hasattr(monitor, 'current_recording_start') else None
+            }
+
+        return jsonify(status)
+    except Exception as e:
+        logger.error(f"Error getting status: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/daily_timeline')
 def get_daily_timeline():
@@ -622,8 +647,18 @@ def get_settings():
                 if isinstance(new_settings['recording_enabled'], str):
                     new_settings['recording_enabled'] = new_settings['recording_enabled'].lower() == 'true'
             
-            restart_required = monitor.update_settings(new_settings)
-            return jsonify({'restart_required': restart_required})
+            # Update settings and save them
+            monitor.settings.update_settings(new_settings)
+            
+            # Update monitor's internal state
+            if 'recording_interval' in new_settings:
+                monitor.chunk_duration_minutes = new_settings['recording_interval']
+                monitor.chunk_duration_seconds = monitor.chunk_duration_minutes * 60
+            
+            if 'audio_device' in new_settings:
+                monitor.audio_device = new_settings['audio_device']
+            
+            return jsonify({'status': 'success'})
         except Exception as e:
             logger.error(f"Error updating settings: {str(e)}")
             return jsonify({'error': str(e)}), 400
@@ -642,6 +677,23 @@ def get_settings():
     except Exception as e:
         logger.error(f"Error getting settings: {str(e)}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/audio_devices')
+def audio_devices():
+    """Get list of available audio input devices."""
+    import sounddevice as sd
+    devices = sd.query_devices()
+    input_devices = []
+    
+    for i, device in enumerate(devices):
+        if device['max_input_channels'] > 0:  # Only include input devices
+            input_devices.append({
+                'index': i,
+                'name': device['name'],
+                'channels': device['max_input_channels']
+            })
+    
+    return jsonify(input_devices)
 
 # Add rate limiting for audio file requests
 audio_rate_limit = {

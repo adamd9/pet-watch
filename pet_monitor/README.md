@@ -4,6 +4,12 @@ A lightweight Python-based pet audio monitoring application designed for low-pow
 
 ## Features
 
+- Real-time monitoring status
+  - Live recording status indicator
+  - Dynamic progress tracking
+  - Time remaining display
+  - Clear recording state visualization
+  - Automatic status updates
 - Daily timeline view showing audio activity across each day
   - Fixed 24-hour view with hourly grid lines
   - Detailed audio level visualization for each recording
@@ -26,6 +32,8 @@ A lightweight Python-based pet audio monitoring application designed for low-pow
   - Audio input device selection with automatic fallback
   - Adjustable recording interval (1-60 minutes)
   - Settings persist between restarts
+  - Real-time settings updates without restart
+  - Automatic device detection and configuration
 - Continuous audio recording in configurable chunks
 - Live recording status and progress display
 - Web-based playback interface
