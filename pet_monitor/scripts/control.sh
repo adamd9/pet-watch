@@ -1,10 +1,14 @@
 #!/bin/bash
 
+# Get the directory where the script is located
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
 # Load environment variables
-if [ -f ../.env ]; then
-    source ../.env
+if [ -f "$PROJECT_ROOT/.env" ]; then
+    source "$PROJECT_ROOT/.env"
 else
-    echo "Error: .env file not found. Please copy scripts/env.example to .env and configure it."
+    echo "Error: .env file not found in $PROJECT_ROOT/. Please copy env.example to .env and configure it."
     exit 1
 fi
 

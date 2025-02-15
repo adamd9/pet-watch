@@ -6,7 +6,7 @@ import signal
 import numpy as np
 import json
 from scipy import signal as scipy_signal
-import alsaaudio
+import platform
 import time
 import sys
 from watchdog.observers import Observer
@@ -17,6 +17,12 @@ import threading
 import re
 import queue
 import lameenc
+
+# Platform-specific imports
+if platform.system() == 'Darwin':
+    import pyaudio
+else:
+    import alsaaudio
 
 # Set up logging
 logging.basicConfig(
@@ -35,27 +41,28 @@ class Settings:
         self.default_settings = {
             'recording_enabled': True,
             'recording_interval': 10,  # minutes
-            'audio_device': None,  # Will be auto-detected
+            'audio_device': None,
+            'last_known_devices': [],  # List of previously detected devices
             'retention_hours': 48  # Default to 48 hours retention
         }
         self.settings = self.load_settings()
     
     def load_settings(self):
+        """Load settings from file or create with defaults if not exists"""
         try:
             if os.path.exists(self.settings_file):
                 with open(self.settings_file, 'r') as f:
-                    return json.load(f)
-            else:
-                settings = self.default_settings
-                self.settings = settings  # Set settings before saving
-                self.save_settings()  # Save default settings
+                    settings = json.load(f)
+                # Ensure all default settings exist
+                for key, value in self.default_settings.items():
+                    if key not in settings:
+                        settings[key] = value
                 return settings
         except Exception as e:
-            logger.error(f"Error loading settings: {str(e)}")
-            settings = self.default_settings
-            self.settings = settings
-            self.save_settings()
-            return settings
+            logger.error(f"Error loading settings: {e}")
+        
+        # If loading fails or file doesn't exist, use defaults
+        return self.default_settings.copy()
     
     def save_settings(self):
         try:
@@ -150,6 +157,102 @@ class FileChangeHandler(FileSystemEventHandler):
             logger.info(f"Detected change in {event.src_path}, restarting...")
             self.restart_callback()
 
+class AudioInterface:
+    def __init__(self, sample_rate, channels, period_size):
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.period_size = period_size
+
+    def open_stream(self, device=None):
+        raise NotImplementedError()
+
+    def read(self, stream):
+        raise NotImplementedError()
+
+    def close_stream(self, stream):
+        raise NotImplementedError()
+
+    def list_devices(self):
+        raise NotImplementedError()
+
+class LinuxAudioInterface(AudioInterface):
+    def open_stream(self, device=None):
+        # Handle both string and integer device specifications
+        if device is None:
+            device = "hw:1,0"
+        elif isinstance(device, int):
+            device = f"hw:{device},0"
+        return alsaaudio.PCM(
+            alsaaudio.PCM_CAPTURE,
+            alsaaudio.PCM_NORMAL,
+            device=device,
+            channels=self.channels,
+            rate=self.sample_rate,
+            format=alsaaudio.PCM_FORMAT_S16_LE,
+            periodsize=self.period_size
+        )
+
+    def read(self, stream):
+        length, data = stream.read()
+        return data if length > 0 else None
+
+    def close_stream(self, stream):
+        stream.close()
+
+    def list_devices(self):
+        # Convert card numbers to hw:X,0 format for consistency
+        cards = alsaaudio.cards()
+        return [f"hw:{i},0" for i in range(len(cards))]
+
+class MacAudioInterface(AudioInterface):
+    def open_stream(self, device=None):
+        p = pyaudio.PyAudio()
+        device_index = None
+        if device is not None:
+            # Handle both string and integer device specifications
+            if isinstance(device, int):
+                device_index = device
+            else:
+                # Find the device index by name
+                for i in range(p.get_device_count()):
+                    dev_info = p.get_device_info_by_index(i)
+                    if str(device) in str(dev_info['name']):
+                        device_index = i
+                        break
+
+        return p.open(
+            format=pyaudio.paInt16,
+            channels=self.channels,
+            rate=self.sample_rate,
+            input=True,
+            input_device_index=device_index,
+            frames_per_buffer=self.period_size
+        )
+
+    def read(self, stream):
+        try:
+            data = stream.read(self.period_size, exception_on_overflow=False)
+            return data
+        except Exception as e:
+            logger.error(f"Error reading from audio stream: {e}")
+            return None
+
+    def close_stream(self, stream):
+        stream.stop_stream()
+        stream.close()
+        p = stream._parent
+        p.terminate()
+
+    def list_devices(self):
+        p = pyaudio.PyAudio()
+        devices = []
+        for i in range(p.get_device_count()):
+            dev_info = p.get_device_info_by_index(i)
+            if dev_info['maxInputChannels'] > 0:  # Only include input devices
+                devices.append(dev_info['name'])
+        p.terminate()
+        return devices
+
 class AudioMonitor:
     def __init__(self, audio_output_dir="recordings/audio"):
         self.audio_output_dir = audio_output_dir
@@ -161,14 +264,29 @@ class AudioMonitor:
         # Initialize level database
         self.level_db = LevelDB(os.path.join(audio_output_dir, "levels.db"))
         
-        # Audio parameters - using values known to work with the USB microphone
-        self.sample_rate = 48000  # Known working sample rate
+        # Audio parameters
+        self.sample_rate = 48000
         self.channels = 1
         self.chunk_duration_minutes = self.settings.settings['recording_interval']
         self.chunk_duration_seconds = self.chunk_duration_minutes * 60
-        self.format = alsaaudio.PCM_FORMAT_S16_LE
-        self.device = self.settings.settings['audio_device'] or "hw:1,0"  # Use settings device or fallback
         self.period_size = 1024
+        
+        # Initialize platform-specific audio interface
+        if platform.system() == 'Darwin':
+            self.audio_interface = MacAudioInterface(
+                sample_rate=self.sample_rate,
+                channels=self.channels,
+                period_size=self.period_size
+            )
+        else:  # Linux/RPi
+            self.audio_interface = LinuxAudioInterface(
+                sample_rate=self.sample_rate,
+                channels=self.channels,
+                period_size=self.period_size
+            )
+        
+        # Initialize device
+        self.device = self.select_audio_device()
         
         # Initialize MP3 encoder with good quality settings
         self.encoder = lameenc.Encoder()
@@ -334,79 +452,52 @@ class AudioMonitor:
 
     def start_monitoring(self):
         """Start the audio monitoring loop"""
-        logger.info("Starting audio monitoring")
         try:
             while self.running:
-                if self.device is None:
-                    logger.warning("No audio device available, retrying in 5 seconds...")
-                    time.sleep(5)
-                    self.device = self.select_audio_device()
+                if not self.settings.settings['recording_enabled']:
+                    logger.info("Recording disabled in settings")
+                    time.sleep(1)
                     continue
-                
+
                 try:
-                    # Check disk space before starting new recording
-                    if not self.check_disk_space(required_mb=100):
-                        # Try to free up space
-                        deleted_count, freed_space = self.cleanup_old_recordings()
-                        if not self.check_disk_space(required_mb=100):
-                            logger.error("Not enough disk space for new recording, waiting...")
-                            time.sleep(60)  # Wait a minute before retrying
-                            continue
-                    
-                    # Record start time
-                    start_time = time.time()
-                    
-                    # Record one chunk (10 minutes)
-                    logger.info("Starting new recording...")
+                    # Try to record a chunk
                     self.record_chunk()
-                    
-                    # Calculate recording time
-                    recording_time = time.time() - start_time
-                    logger.info(f"Recording completed in {recording_time:.2f} seconds")
-                    
-                    # Brief pause before next recording
-                    if self.running:
-                        time.sleep(1)
                 except Exception as e:
-                    logger.error(f"Error in recording loop: {str(e)}")
-                    time.sleep(1)  # Wait before retrying
+                    logger.error(f"Error in monitoring loop: {e}")
+                    # If there's an audio device error, try to reselect the device
+                    if "No such file or directory" in str(e) or "Invalid audio device" in str(e):
+                        logger.warning("Audio device error, attempting to reselect device...")
+                        self.device = self.select_audio_device()
+                    time.sleep(5)  # Wait before retrying
+                
         except Exception as e:
-            logger.error(f"Error in monitoring loop: {str(e)}")
+            logger.error(f"Error in monitoring loop: {e}")
             self.running = False
     
     def record_chunk(self):
         """Record a chunk of audio"""
         try:
-            # Set up audio input with known working parameters
-            inp = alsaaudio.PCM(
-                alsaaudio.PCM_CAPTURE,
-                alsaaudio.PCM_NORMAL,
-                device=self.device,
-                channels=self.channels,
-                rate=self.sample_rate,
-                format=self.format,
-                periodsize=self.period_size
-            )
+            stream = self.audio_interface.open_stream(self.device)
             
-            logger.info(f"Recording audio with: rate={self.sample_rate}, channels={self.channels}, format={self.format}")
-            
-            # Calculate number of frames needed
-            total_frames = int(self.sample_rate * self.chunk_duration_seconds)
-            frames = []
-            
-            # Record audio
-            for _ in range(0, total_frames, self.period_size):
+            # Calculate number of chunks needed for the desired duration
+            chunks_needed = int((self.chunk_duration_seconds * self.sample_rate) / self.period_size)
+            audio_data = []
+
+            for _ in range(chunks_needed):
                 if not self.running:
                     break
-                length, data = inp.read()
-                if length > 0:
-                    frames.append(data)
+
+                data = self.audio_interface.read(stream)
+                if data is not None:
+                    audio_data.append(data)
+
+            self.audio_interface.close_stream(stream)
             
-            if not frames or not self.running:
+            if not audio_data or not self.running:
                 return
             
             # Convert to numpy array
-            audio_data = np.frombuffer(b''.join(frames), dtype=np.int16)
+            audio_data = np.frombuffer(b''.join(audio_data), dtype=np.int16)
             
             # Queue the recording for processing
             timestamp = datetime.datetime.now()
@@ -570,6 +661,43 @@ class AudioMonitor:
             levels.append(float(normalized))
         
         return levels
+
+    def select_audio_device(self):
+        """Select an appropriate audio device, with fallback options."""
+        try:
+            # Try to use the device from settings
+            if self.settings.settings['audio_device']:
+                logger.info(f"Using configured audio device: {self.settings.settings['audio_device']}")
+                return self.settings.settings['audio_device']
+            
+            # Get available devices
+            devices = self.audio_interface.list_devices()
+            logger.info(f"Available audio devices: {devices}")
+            
+            if not devices:
+                if platform.system() == 'Darwin':
+                    logger.info("No devices found, using default macOS device")
+                    return None  # PyAudio will use system default
+                else:
+                    logger.info("No devices found, using default ALSA device hw:0,0")
+                    return "hw:0,0"  # Updated to use card 0
+            
+            # On Linux/RPi, prefer USB audio devices if available
+            if platform.system() != 'Darwin':
+                for device in devices:
+                    if isinstance(device, str) and 'usb' in device.lower():
+                        logger.info(f"Selected USB audio device: {device}")
+                        return device
+            
+            # Otherwise use the first available device
+            logger.info(f"Using first available device: {devices[0]}")
+            return devices[0]
+            
+        except Exception as e:
+            logger.error(f"Error selecting audio device: {e}")
+            if platform.system() == 'Darwin':
+                return None
+            return "hw:0,0"  # Updated to use card 0
 
 # Create global monitor instance
 monitor = None
@@ -815,7 +943,7 @@ def get_settings():
     # GET request
     try:
         settings = monitor.settings.settings
-        available_devices = monitor.get_available_devices()
+        available_devices = monitor.audio_interface.list_devices()
         return jsonify({
             'recording_enabled': settings['recording_enabled'],
             'audio_device': settings['audio_device'],
@@ -835,7 +963,7 @@ def audio_devices():
     try:
         if not monitor:
             return jsonify({'error': 'Monitor not initialized'}), 500
-        devices = monitor.get_available_devices()
+        devices = monitor.audio_interface.list_devices()
         # Return a list of device objects with id and name
         return jsonify([{'id': dev, 'name': dev, 'isDefault': dev == monitor.device} for dev in devices])
     except Exception as e:

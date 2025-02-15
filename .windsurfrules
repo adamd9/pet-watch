@@ -1,2 +1,3 @@
 1. Read the regularily
 2. if you change some core design or function, check and update the readme
+3. project MUST be compatible with Mac OS and the raspberrypi zero 2w. Ensure any libraries are available on the systems and create OS specific splits in the code where needed.

@@ -1,0 +1,15 @@
+[Unit]
+Description=Pet Monitor Audio Service
+After=network.target
+
+[Service]
+Type=simple
+User=adam
+WorkingDirectory=/home/adam/pet_monitor
+Environment=PATH=/home/adam/pet_monitor/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/home/adam/pet_monitor/venv/bin/python audio_monitor.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

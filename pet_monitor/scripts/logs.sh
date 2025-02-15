@@ -1,10 +1,14 @@
 #!/bin/bash
 
+# Get the directory where the script is located
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
 # Load environment variables
-if [ -f ../.env ]; then
-    source ../.env
+if [ -f "$PROJECT_ROOT/.env" ]; then
+    source "$PROJECT_ROOT/.env"
 else
-    echo "Error: .env file not found. Please copy scripts/env.example to .env and configure it."
+    echo "Error: .env file not found in $PROJECT_ROOT/. Please copy env.example to .env and configure it."
     exit 1
 fi
 
@@ -50,7 +54,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Build the journalctl command
-CMD="ssh $RPI_USER@$RPI_HOST sudo journalctl -u pet-monitor"
+CMD="$SCRIPT_DIR/ssh $RPI_USER@$RPI_HOST sudo journalctl -u pet-monitor"
 
 if [ $SINCE_BOOT -eq 1 ]; then
     CMD="$CMD -b"
