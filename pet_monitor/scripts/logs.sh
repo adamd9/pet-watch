@@ -54,7 +54,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Build the journalctl command
-CMD="$SCRIPT_DIR/ssh $RPI_USER@$RPI_HOST sudo journalctl -u pet-monitor"
+CMD="ssh $RPI_USER@$RPI_HOST sudo journalctl -u pet-monitor"
 
 if [ $SINCE_BOOT -eq 1 ]; then
     CMD="$CMD -b"

@@ -299,6 +299,7 @@ class AudioMonitor:
         self.running = False
         self.current_recording = None
         self.current_recording_start = None
+        self.last_audio_data_time = None  # Track when we last got valid audio data
         self.recordings = []
         self.load_existing_recordings()
         
@@ -459,6 +460,12 @@ class AudioMonitor:
                     time.sleep(1)
                     continue
 
+                # Check if audio device is still valid
+                if self.last_audio_data_time and (datetime.datetime.now() - self.last_audio_data_time).total_seconds() > 30:
+                    logger.warning("No audio data received for 30 seconds, attempting to reselect device...")
+                    self.device = self.select_audio_device()
+                    self.last_audio_data_time = datetime.datetime.now()  # Reset timer
+
                 try:
                     # Try to record a chunk
                     self.record_chunk()
@@ -482,30 +489,66 @@ class AudioMonitor:
             # Calculate number of chunks needed for the desired duration
             chunks_needed = int((self.chunk_duration_seconds * self.sample_rate) / self.period_size)
             audio_data = []
+            silence_threshold = 1  # Minimal amplitude to consider as non-silence
+            had_audio = False
 
-            for _ in range(chunks_needed):
+            # Set recording state
+            timestamp = datetime.datetime.now()
+            filename = f"recording_{timestamp.strftime('%Y-%m-%dT%H-%M-%S')}.mp3"
+            self.current_recording = {
+                'filename': filename,
+                'timestamp': timestamp.isoformat(),
+                'status': 'starting',
+                'duration': self.chunk_duration_seconds
+            }
+            self.current_recording_start = timestamp
+
+            for chunk_idx in range(chunks_needed):
                 if not self.running:
                     break
 
                 data = self.audio_interface.read(stream)
                 if data is not None:
+                    # Convert chunk to numpy array to check audio levels
+                    chunk_data = np.frombuffer(data, dtype=np.int16)
+                    if np.max(np.abs(chunk_data)) > silence_threshold:
+                        had_audio = True
+                        self.last_audio_data_time = datetime.datetime.now()
                     audio_data.append(data)
+                    
+                    # Update recording status
+                    progress = (chunk_idx + 1) / chunks_needed * 100
+                    self.current_recording['status'] = f'recording ({progress:.0f}%)'
 
             self.audio_interface.close_stream(stream)
             
             if not audio_data or not self.running:
+                logger.warning("Recording stopped: no audio data or monitor stopped")
+                self.current_recording['status'] = 'failed - no audio data'
+                return
+            
+            if not had_audio:
+                logger.warning("Recording contains only silence")
+                self.current_recording['status'] = 'failed - silence only'
                 return
             
             # Convert to numpy array
             audio_data = np.frombuffer(b''.join(audio_data), dtype=np.int16)
             
-            # Queue the recording for processing
-            timestamp = datetime.datetime.now()
-            self.processing_queue.put((audio_data, timestamp))
-            logger.info(f"Queued recording for processing at {timestamp}")
+            # Create filepath
+            filepath = os.path.join(self.audio_output_dir, filename)
+            
+            # Update status before processing
+            self.current_recording['status'] = 'processing'
+            
+            # Add to processing queue
+            self.processing_queue.put((audio_data, filepath, timestamp))
             
         except Exception as e:
             logger.error(f"Error recording chunk: {str(e)}")
+            if self.current_recording:
+                self.current_recording['status'] = f'failed - {str(e)}'
+            raise
 
     def load_existing_recordings(self):
         """Load existing recordings from directory"""
@@ -830,22 +873,97 @@ def get_status():
         return jsonify({'error': 'Monitor not initialized'}), 500
 
     try:
+        current_time = datetime.datetime.now()
         status = {
             'recording_enabled': monitor.settings.settings['recording_enabled'],
             'recording_interval': monitor.settings.settings['recording_interval'],
-            'current_recording': None
+            'current_recording': None,
+            'monitor_running': monitor.running,
+            'last_recording_check': current_time.strftime('%Y-%m-%dT%H:%M:%S'),
+            'health': {
+                'status': 'healthy',
+                'issues': []
+            }
         }
 
+        # Add audio device health info
+        if monitor.last_audio_data_time:
+            audio_silence_duration = (current_time - monitor.last_audio_data_time).total_seconds()
+            status['health']['last_audio_data'] = monitor.last_audio_data_time.strftime('%Y-%m-%dT%H:%M:%S')
+            status['health']['audio_silence_duration'] = int(audio_silence_duration)
+            
+            if audio_silence_duration > 30:
+                status['health']['status'] = 'warning'
+                status['health']['issues'].append({
+                    'type': 'audio_silence',
+                    'message': f'No audio data received for {int(audio_silence_duration)} seconds',
+                    'silence_duration': int(audio_silence_duration)
+                })
+
         if monitor.current_recording:
+            recording_start = monitor.current_recording_start
+            expected_duration = monitor.settings.settings['recording_interval'] * 60  # in seconds
+            current_duration = (current_time - recording_start).total_seconds()
+            
             status['current_recording'] = {
-                'filename': monitor.current_recording,
-                'start_time': monitor.current_recording_start.strftime('%Y-%m-%dT%H:%M:%S') if hasattr(monitor, 'current_recording_start') else None
+                'filename': monitor.current_recording.get('filename'),
+                'start_time': recording_start.strftime('%Y-%m-%dT%H:%M:%S'),
+                'current_duration': int(current_duration),
+                'expected_duration': expected_duration,
+                'status': monitor.current_recording.get('status', 'unknown')
             }
+
+            # Check for stale or failed recordings
+            if 'failed' in monitor.current_recording.get('status', ''):
+                status['health']['status'] = 'error'
+                status['health']['issues'].append({
+                    'type': 'recording_failed',
+                    'message': monitor.current_recording.get('status', 'unknown failure')
+                })
+            elif current_duration > expected_duration + 30:  # Allow 30s grace period
+                status['health']['status'] = 'warning'
+                status['health']['issues'].append({
+                    'type': 'stale_recording',
+                    'message': f'Current recording duration ({int(current_duration)}s) exceeds expected duration ({expected_duration}s)',
+                    'expected_duration': expected_duration,
+                    'current_duration': int(current_duration)
+                })
+
+        elif monitor.settings.settings['recording_enabled'] and monitor.running:
+            status['health']['status'] = 'warning'
+            status['health']['issues'].append({
+                'type': 'no_active_recording',
+                'message': 'Recording is enabled but no active recording found'
+            })
+
+        # Check if monitor is running but recording is disabled
+        if monitor.running and not monitor.settings.settings['recording_enabled']:
+            status['health']['issues'].append({
+                'type': 'info',
+                'message': 'Monitor is running but recording is disabled'
+            })
+
+        # Check if monitor is not running but recording is enabled
+        if not monitor.running and monitor.settings.settings['recording_enabled']:
+            status['health']['status'] = 'error'
+            status['health']['issues'].append({
+                'type': 'error',
+                'message': 'Recording is enabled but monitor is not running'
+            })
 
         return jsonify(status)
     except Exception as e:
         logger.error(f"Error getting status: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({
+            'error': str(e),
+            'health': {
+                'status': 'error',
+                'issues': [{
+                    'type': 'error',
+                    'message': f'Error getting status: {str(e)}'
+                }]
+            }
+        }), 500
 
 @app.route('/daily_timeline')
 def get_daily_timeline():
