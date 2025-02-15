@@ -1,22 +1,20 @@
-import os
-import time
-import datetime
-import threading
-import numpy as np
-import sounddevice as sd
-import soundfile as sf
-from scipy.io import wavfile
-import logging
-import json
-from flask import Flask, render_template, jsonify, request, send_from_directory
-from datetime import timedelta
-import re
-import signal
 import argparse
-import platform
+import logging
+import datetime
+import os
+import signal
+import numpy as np
+import json
+from scipy import signal as scipy_signal
+import alsaaudio
+import time
 import sys
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+import wave
+from flask import Flask, jsonify, send_file, request, render_template, send_from_directory
+import threading
+import re
 
 # Set up logging
 logging.basicConfig(
@@ -106,7 +104,7 @@ class LevelDB:
         return {
             filename: data 
             for filename, data in self.levels.items() 
-            if datetime.datetime.strptime(data['timestamp'], "%Y-%m-%d %H:%M:%S") > since_dt
+            if datetime.datetime.strptime(data['timestamp'], "%Y-%m-%dT%H:%M:%S") > since_dt
         }
 
     def get_all_levels(self):
@@ -149,21 +147,14 @@ class AudioMonitor:
         # Initialize level database
         self.level_db = LevelDB(os.path.join(audio_output_dir, "levels.db"))
         
-        # Audio parameters
-        self.sample_rate = 44100
+        # Audio parameters - using values known to work with the USB microphone
+        self.sample_rate = 48000  # Known working sample rate
         self.channels = 1
         self.chunk_duration_minutes = self.settings.settings['recording_interval']
         self.chunk_duration_seconds = self.chunk_duration_minutes * 60
-        
-        # Get available audio devices
-        self.available_devices = self.get_available_devices()
-        logger.info("Available audio devices:")
-        for i, device in enumerate(self.available_devices):
-            logger.info(f"  [{i}] {device['name']}")
-        
-        # Select audio device
-        self.audio_device = self.select_audio_device()
-        logger.info(f"Using audio device {self.audio_device}: {self.get_device_name(self.audio_device)}")
+        self.format = alsaaudio.PCM_FORMAT_S16_LE
+        self.device = self.settings.settings['audio_device'] or "hw:1,0"  # Use settings device or fallback
+        self.period_size = 1024
         
         # Initialize state
         self.running = False
@@ -182,55 +173,27 @@ class AudioMonitor:
 
     def get_available_devices(self):
         """Get list of available audio input devices"""
-        devices = []
         try:
-            device_list = sd.query_devices()
-            for i, device in enumerate(device_list):
-                if device['max_input_channels'] > 0:  # Only input devices
-                    devices.append({
-                        'id': i,
-                        'name': device['name']
-                    })
-            logger.debug(f"Found {len(devices)} input devices")
+            devices = alsaaudio.pcms(alsaaudio.PCM_CAPTURE)
+            logger.info(f"Found {len(devices)} input devices")
+            for device in devices:
+                logger.info(f"Found device: {device}")
+            return devices
         except Exception as e:
             logger.error(f"Error getting audio devices: {str(e)}")
-        return devices
-
-    def get_device_name(self, device_id):
-        """Get the name of an audio device by its ID"""
-        try:
-            device = sd.query_devices(device_id)
-            return device['name']
-        except Exception as e:
-            logger.error(f"Error getting device name for ID {device_id}: {str(e)}")
-            return "Unknown Device"
+            return []
 
     def select_audio_device(self):
         """Select the audio device to use"""
         try:
-            # If we have a device set in settings and it's available, use it
-            if self.settings.settings['audio_device'] is not None:
-                device_id = self.settings.settings['audio_device']
-                try:
-                    sd.query_devices(device_id)
-                    if device_id < len(self.available_devices):
-                        return device_id
-                except Exception:
-                    logger.warning(f"Previously selected device {device_id} is no longer available")
-
-            # If we have available devices, use the first one
-            if self.available_devices:
-                device_id = self.available_devices[0]['id']
-                self.settings.settings['audio_device'] = device_id
-                self.settings.save_settings()
-                return device_id
-
-            logger.error("No audio input devices available")
-            return None
+            # Always use the USB audio device (hw:1,0) as we know it works
+            logger.info(f"Using USB audio device: {self.device}")
+            return self.device
+            
         except Exception as e:
             logger.error(f"Error selecting audio device: {str(e)}")
             return None
-    
+
     def update_settings(self, new_settings):
         restart_required = False
         
@@ -238,6 +201,7 @@ class AudioMonitor:
             old_device = self.settings.settings['audio_device']
             if new_settings['audio_device'] != old_device:
                 restart_required = True
+                self.device = new_settings['audio_device']  # Update device immediately
         
         if 'recording_interval' in new_settings:
             old_interval = self.settings.settings['recording_interval']
@@ -257,10 +221,6 @@ class AudioMonitor:
         # Update settings
         self.settings.update_settings(new_settings)
         
-        # If device changed, update it
-        if 'audio_device' in new_settings:
-            self.audio_device = self.select_audio_device()
-        
         return restart_required
     
     def calculate_audio_levels(self, audio_data, num_segments=100):
@@ -268,6 +228,9 @@ class AudioMonitor:
         # Convert to mono if stereo
         if len(audio_data.shape) > 1 and audio_data.shape[1] > 1:
             audio_data = np.mean(audio_data, axis=1)
+        
+        # Normalize to float in range [-1, 1]
+        audio_data = audio_data.astype(np.float32) / 32768.0
         
         # Split into segments
         segment_size = len(audio_data) // num_segments
@@ -280,69 +243,93 @@ class AudioMonitor:
             # Calculate RMS (root mean square)
             rms = np.sqrt(np.mean(np.square(segment)))
             
-            # Convert to decibels
+            # Convert to decibels relative to full scale (dBFS)
             if rms > 0:
-                db = 20 * np.log10(rms)
+                dbfs = 20 * np.log10(rms)
             else:
-                db = -96  # Noise floor
+                dbfs = -96  # Noise floor
             
             # Normalize to 0-1 range
-            # Typical values: -60 dB (quiet) to 0 dB (loud)
-            normalized = (db + 60) / 60  # Shift and scale to 0-1
-            normalized = np.clip(normalized, 0, 1)  # Ensure within bounds
+            # Map -60 dBFS (quiet) to 0 and 0 dBFS (max) to 1
+            normalized = (dbfs + 60) / 60
+            normalized = np.clip(normalized, 0, 1)
             
             levels.append(float(normalized))
         
         return levels
 
     def record_chunk(self):
+        """Record a chunk of audio"""
         try:
-            timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            filename = f"recording_{timestamp}.wav"
-            filepath = os.path.join(self.audio_output_dir, filename)
+            # Set up audio input with known working parameters
+            inp = alsaaudio.PCM(
+                alsaaudio.PCM_CAPTURE,
+                alsaaudio.PCM_NORMAL,
+                device=self.device,
+                channels=self.channels,
+                rate=self.sample_rate,
+                format=self.format,
+                periodsize=self.period_size
+            )
+            
+            logger.info(f"Recording audio with: rate={self.sample_rate}, channels={self.channels}, format={self.format}")
+            
+            # Calculate number of frames needed
+            total_frames = int(self.sample_rate * self.chunk_duration_seconds)
+            frames = []
             
             # Record audio
-            audio_data = sd.rec(
-                int(self.chunk_duration_seconds * self.sample_rate),
-                samplerate=self.sample_rate,
-                channels=self.channels,
-                device=self.audio_device
-            )
-            sd.wait()
+            for _ in range(0, total_frames, self.period_size):
+                if not self.running:
+                    break
+                length, data = inp.read()
+                if length > 0:
+                    frames.append(data)
             
-            # Calculate detailed audio levels
+            if not frames or not self.running:
+                return
+            
+            # Convert to numpy array
+            audio_data = np.frombuffer(b''.join(frames), dtype=np.int16)
+            
+            # Save the recording
+            timestamp = datetime.datetime.now()
+            filename = f"recording_{timestamp.strftime('%Y-%m-%dT%H-%M-%S')}.wav"
+            filepath = os.path.join(self.audio_output_dir, filename)
+            
+            # Save as WAV file
+            with wave.open(filepath, 'wb') as w:
+                w.setnchannels(self.channels)
+                w.setsampwidth(2)  # 2 bytes for S16_LE format
+                w.setframerate(self.sample_rate)
+                w.writeframes(audio_data.tobytes())
+            
+            logger.info(f"Saved recording to {filepath}")
+            
+            # Calculate levels
             levels = self.calculate_audio_levels(audio_data)
+            overall_level = float(np.mean(levels))
             
-            # Calculate overall level (average of all levels)
-            level = float(np.mean(levels))
-            
-            # Save audio file
-            sf.write(filepath, audio_data, self.sample_rate)
-            
-            # Save detailed level data to JSON
-            levels_filepath = filepath.replace('.wav', '.levels.json')
-            with open(levels_filepath, 'w') as f:
-                json.dump({
-                    'timestamp': timestamp,
-                    'levels': levels,
-                    'overall_level': level,
-                    'duration': self.chunk_duration_seconds,
-                    'num_segments': len(levels)
-                }, f)
-            
-            # Save overall level to database
-            timestamp_str = datetime.datetime.strptime(timestamp, "%Y-%m-%d_%H-%M-%S").strftime("%Y-%m-%d %H:%M:%S")
-            self.level_db.add_level(filename, timestamp_str, level, levels, self.chunk_duration_seconds)
-            
-            # Add to recordings list
-            self.recordings.append({
+            # Store recording info
+            recording_info = {
                 'filename': filename,
-                'timestamp': timestamp_str,
-                'level': level,
-                'has_detailed_levels': True
-            })
+                'timestamp': timestamp.isoformat(),
+                'duration': self.chunk_duration_seconds,
+                'level': overall_level,
+                'detailed_levels': levels
+            }
             
-            logger.info(f"Recorded chunk: {filename} with {len(levels)} level segments")
+            # Save recording info
+            self.save_recording_info(recording_info)
+            
+            # Add to level database
+            self.level_db.add_level(
+                filename,
+                timestamp.isoformat(),
+                overall_level,
+                levels,
+                self.chunk_duration_seconds
+            )
             
         except Exception as e:
             logger.error(f"Error recording chunk: {str(e)}")
@@ -370,7 +357,7 @@ class AudioMonitor:
                             logger.error(f"Error loading levels from {levels_filename}: {str(e)}")
                     
                     self.recordings.append({
-                        'timestamp': dt.strftime("%Y-%m-%d %H:%M:%S"),
+                        'timestamp': dt.strftime("%Y-%m-%dT%H:%M:%S"),
                         'filename': filename,
                         'duration': self.chunk_duration_minutes * 60,
                         'levels': levels,
@@ -385,10 +372,10 @@ class AudioMonitor:
         logger.info("Starting audio monitoring")
         try:
             while self.running:
-                if self.audio_device is None:
+                if self.device is None:
                     logger.warning("No audio device available, retrying in 5 seconds...")
                     time.sleep(5)
-                    self.audio_device = self.select_audio_device()
+                    self.device = self.select_audio_device()
                     continue
                 
                 try:
@@ -409,12 +396,11 @@ class AudioMonitor:
             timestamp = datetime.datetime.now()
             self.current_recording_start = timestamp
             self.current_recording = {
-                'timestamp': timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                'timestamp': timestamp.strftime("%Y-%m-%dT%H:%M:%S"),
                 'status': 'recording',
-                'levels': [],
-                'duration': self.chunk_duration_minutes * 60,
-                'error_message': None,
-                'current_level': 0
+                'filename': f'recording_{timestamp.strftime("%Y-%m-%dT%H:%M:%S")}.wav',
+                'start_time': timestamp.strftime("%Y-%m-%dT%H:%M:%S"),
+                'duration': self.chunk_duration_minutes * 60
             }
             
             self.monitor_thread = threading.Thread(target=self.start_monitoring, daemon=True)
@@ -454,6 +440,27 @@ class AudioMonitor:
         self.stop()
         sys.exit(0)
 
+    def save_recording_info(self, recording_info):
+        """Save recording information to a JSON file."""
+        try:
+            # Convert datetime objects to strings
+            info_to_save = recording_info.copy()
+            if 'timestamp' in info_to_save and isinstance(info_to_save['timestamp'], datetime.datetime):
+                info_to_save['timestamp'] = info_to_save['timestamp'].strftime("%Y-%m-%dT%H:%M:%S")
+            if 'start_time' in info_to_save and isinstance(info_to_save['start_time'], datetime.datetime):
+                info_to_save['start_time'] = info_to_save['start_time'].strftime("%Y-%m-%dT%H:%M:%S")
+                
+            recordings_file = os.path.join(self.audio_output_dir, 'recordings.json')
+            recordings = []
+            if os.path.exists(recordings_file):
+                with open(recordings_file, 'r') as f:
+                    recordings = json.load(f)
+            recordings.append(info_to_save)
+            with open(recordings_file, 'w') as f:
+                json.dump(recordings, f, indent=4)
+        except Exception as e:
+            logger.error(f"Error saving recording info: {e}")
+
 # Create global monitor instance
 monitor = None
 
@@ -485,7 +492,7 @@ def get_recordings():
         # If we only need levels, get them from the level database
         if since:
             try:
-                since_dt = datetime.datetime.strptime(since, "%Y-%m-%d %H:%M:%S")
+                since_dt = datetime.datetime.strptime(since, "%Y-%m-%dT%H:%M:%S")
                 levels = monitor.level_db.get_levels_since(since_dt)
             except ValueError:
                 levels = monitor.level_db.get_all_levels()
@@ -503,8 +510,8 @@ def get_recordings():
         # Filter recordings after the given timestamp
         if since:
             try:
-                since_dt = datetime.datetime.strptime(since, "%Y-%m-%d %H:%M:%S")
-                recordings = [r for r in recordings if datetime.datetime.strptime(r['timestamp'], "%Y-%m-%d %H:%M:%S") > since_dt]
+                since_dt = datetime.datetime.strptime(since, "%Y-%m-%dT%H:%M:%S")
+                recordings = [r for r in recordings if datetime.datetime.strptime(r['timestamp'], "%Y-%m-%dT%H:%M:%S") > since_dt]
             except ValueError:
                 pass
     
@@ -594,7 +601,7 @@ def get_status():
         if monitor.current_recording:
             status['current_recording'] = {
                 'filename': monitor.current_recording,
-                'start_time': monitor.current_recording_start.strftime('%Y-%m-%d %H:%M:%S') if hasattr(monitor, 'current_recording_start') else None
+                'start_time': monitor.current_recording_start.strftime('%Y-%m-%dT%H:%M:%S') if hasattr(monitor, 'current_recording_start') else None
             }
 
         return jsonify(status)
@@ -633,7 +640,7 @@ def get_daily_timeline():
     # Filter recordings for the specified date range
     filtered_recordings = [
         r for r in monitor.recordings 
-        if start_dt <= datetime.datetime.strptime(r['timestamp'], "%Y-%m-%d %H:%M:%S") < end_dt
+        if start_dt <= datetime.datetime.strptime(r['timestamp'], "%Y-%m-%dT%H:%M:%S") < end_dt
     ]
     
     # Sort recordings by timestamp
@@ -642,7 +649,7 @@ def get_daily_timeline():
     # Process timeline data
     timeline_data = []
     for recording in filtered_recordings:
-        dt = datetime.datetime.strptime(recording['timestamp'], "%Y-%m-%d %H:%M:%S")
+        dt = datetime.datetime.strptime(recording['timestamp'], "%Y-%m-%dT%H:%M:%S")
         
         # Calculate average level if levels exist
         avg_level = 0
@@ -688,7 +695,7 @@ def get_settings():
                 monitor.chunk_duration_seconds = monitor.chunk_duration_minutes * 60
             
             if 'audio_device' in new_settings:
-                monitor.audio_device = new_settings['audio_device']
+                monitor.device = new_settings['audio_device']
             
             return jsonify({'status': 'success'})
         except Exception as e:
@@ -698,7 +705,7 @@ def get_settings():
     # GET request
     try:
         settings = monitor.settings.settings
-        available_devices = monitor.available_devices
+        available_devices = monitor.get_available_devices()
         return jsonify({
             'recording_enabled': settings['recording_enabled'],
             'audio_device': settings['audio_device'],
@@ -713,19 +720,15 @@ def get_settings():
 @app.route('/audio_devices')
 def audio_devices():
     """Get list of available audio input devices."""
-    import sounddevice as sd
-    devices = sd.query_devices()
-    input_devices = []
-    
-    for i, device in enumerate(devices):
-        if device['max_input_channels'] > 0:  # Only include input devices
-            input_devices.append({
-                'index': i,
-                'name': device['name'],
-                'channels': device['max_input_channels']
-            })
-    
-    return jsonify(input_devices)
+    try:
+        if not monitor:
+            return jsonify({'error': 'Monitor not initialized'}), 500
+        devices = monitor.get_available_devices()
+        # Return a list of device objects with id and name
+        return jsonify([{'id': dev, 'name': dev, 'isDefault': dev == monitor.device} for dev in devices])
+    except Exception as e:
+        logger.error(f"Error getting audio devices: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 # Add rate limiting for audio file requests
 audio_rate_limit = {

@@ -64,6 +64,44 @@ A lightweight Python-based pet audio monitoring application designed for low-pow
 - Dynamic level scaling for optimal visualization
 - Interactive audio player with waveform seeking
 
+## Audio Configuration
+
+The application uses ALSA (Advanced Linux Sound Architecture) for audio recording with the following configuration:
+- Sample Rate: 48000 Hz
+- Format: S16_LE (16-bit signed little-endian)
+- Channels: 1 (mono)
+- Device: hw:1,0 (USB audio device)
+- Period Size: 1024
+
+### USB Microphone Setup
+
+1. Ensure your USB microphone is connected and recognized by the system:
+```bash
+arecord -l
+```
+
+2. The USB microphone should be listed as card 1, device 0 (hw:1,0).
+
+3. If needed, test the microphone directly with:
+```bash
+arecord -D hw:1,0 -f S16_LE -r 48000 -c 1 test.wav
+```
+
+### Dependencies
+
+The application requires the following system packages:
+```bash
+sudo apt-get update
+sudo apt-get install -y python3-dev libasound2-dev
+```
+
+And Python packages (installed via requirements.txt):
+- Flask: Web interface
+- numpy: Audio processing
+- pyalsaaudio: ALSA audio interface
+- scipy: Signal processing
+- watchdog: File system monitoring
+
 ## Hardware Requirements
 
 ### Raspberry Pi Zero 2W Setup
@@ -212,6 +250,179 @@ A lightweight Python-based pet audio monitoring application designed for low-pow
    sudo systemctl enable audio-monitor
    sudo systemctl start audio-monitor
    ```
+
+## Deployment Guide
+
+### System Requirements
+- Raspberry Pi Zero 2 W
+- Debian-based OS (tested on Debian Bookworm)
+- Python 3.11+
+- Git
+- SSH access configured
+
+### Required System Packages
+```bash
+# Install system dependencies
+sudo apt-get update
+sudo apt-get install -y python3-venv python3-pip portaudio19-dev
+```
+
+### Initial Setup
+1. Clone the repository:
+```bash
+mkdir -p ~/pet-monitor
+cd ~/pet-monitor
+git clone https://github.com/adamd9/pet-watch.git .
+```
+
+2. Create and activate virtual environment:
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+3. Install Python dependencies:
+```bash
+pip install -r pet_monitor/requirements.txt
+```
+
+### Service Installation
+1. Copy service file:
+```bash
+sudo cp pet_monitor/pet-monitor.service /etc/systemd/system/
+```
+
+2. Update service file with correct user and paths:
+```bash
+# Replace 'username' with your actual username
+sudo sed -i 's/User=pi/User=username/' /etc/systemd/system/pet-monitor.service
+sudo sed -i 's/\/home\/pi\/pet-monitor/\/home\/username\/pet-monitor/' /etc/systemd/system/pet-monitor.service
+```
+
+3. Enable and start the service:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable pet-monitor
+sudo systemctl start pet-monitor
+```
+
+### Useful Commands
+
+#### Service Management
+```bash
+# View service status
+sudo systemctl status pet-monitor
+
+# Start service
+sudo systemctl start pet-monitor
+
+# Stop service
+sudo systemctl stop pet-monitor
+
+# Restart service
+sudo systemctl restart pet-monitor
+
+# Disable service autostart
+sudo systemctl disable pet-monitor
+```
+
+#### Logging
+```bash
+# View all logs
+sudo journalctl -u pet-monitor
+
+# Follow logs in real-time
+sudo journalctl -u pet-monitor -f
+
+# View logs since last boot
+sudo journalctl -u pet-monitor -b
+
+# View logs with timestamps
+sudo journalctl -u pet-monitor --output=short-precise
+```
+
+#### Troubleshooting
+```bash
+# Check if service is running
+ps aux | grep audio_monitor.py
+
+# Check service configuration
+sudo systemctl cat pet-monitor
+
+# View service dependencies
+sudo systemctl list-dependencies pet-monitor
+
+# Check for port conflicts
+sudo lsof -i :5000
+
+# View system resource usage
+top -p $(pgrep -f audio_monitor.py)
+```
+
+### Common Issues and Solutions
+
+1. **Service fails to start**
+   - Check logs: `sudo journalctl -u pet-monitor -n 50`
+   - Verify user permissions
+   - Ensure virtual environment path is correct
+   - Check audio device permissions
+
+2. **Audio device not found**
+   - List audio devices: `arecord -l`
+   - Check audio group membership: `groups`
+   - Add user to audio group: `sudo usermod -a -G audio $USER`
+
+3. **Port already in use**
+   - Find process: `sudo lsof -i :5000`
+   - Kill process: `sudo kill $(sudo lsof -t -i:5000)`
+
+4. **High CPU Usage**
+   - Check resource usage: `top -p $(pgrep -f audio_monitor.py)`
+   - Review audio buffer settings in code
+   - Monitor temperature: `vcgencmd measure_temp`
+
+### Maintenance
+
+1. **Updating the Application**
+```bash
+cd ~/pet-monitor
+git pull
+source venv/bin/activate
+pip install -r pet_monitor/requirements.txt
+sudo systemctl restart pet-monitor
+```
+
+2. **Backup Configuration**
+```bash
+# Backup service file
+sudo cp /etc/systemd/system/pet-monitor.service ~/pet-monitor-service.backup
+
+# Backup application settings
+cp ~/pet-monitor/pet_monitor/settings.json ~/pet-monitor-settings.backup
+```
+
+3. **Log Rotation**
+The service logs are automatically managed by journald. To view log usage:
+```bash
+sudo journalctl --disk-usage
+```
+
+### Security Considerations
+
+1. **File Permissions**
+```bash
+# Ensure correct ownership
+sudo chown -R $USER:$USER ~/pet-monitor
+
+# Set appropriate permissions
+chmod 750 ~/pet-monitor
+chmod 640 ~/pet-monitor/pet_monitor/*.py
+```
+
+2. **Network Security**
+- The service runs on port 5000 by default
+- Consider setting up a reverse proxy for HTTPS
+- Use firewall rules to restrict access if needed
 
 ## Development vs Production Mode
 
@@ -407,6 +618,20 @@ The application uses a decibel-based scale for audio levels:
 - Levels are normalized to ensure consistent visualization
 - Each recording stores one level measurement per second
 
+## Audio Device Configuration
+
+The application automatically detects and configures audio devices:
+
+1. It first looks for USB audio devices and selects the first one found
+2. If no USB devices are found, it uses the first available input device
+3. The sample rate is automatically set to match the device's default rate
+4. The application uses mono audio (1 channel) for recording
+
+If you encounter audio issues:
+- Check that your USB audio device is properly connected
+- Verify the device is recognized by the system (`arecord -l`)
+- Check the system logs for any errors (`journalctl -u pet-monitor`)
+
 ## Audio File Format
 Files must follow naming convention:
 `recording_YYYY-MM-DD_HH-MM-SS.wav`
@@ -500,6 +725,92 @@ The application stores audio recordings in the `recordings/audio` directory. To 
    - Monitor CPU usage: `top`
    - Check available storage: `df -h`
    - Monitor memory usage: `free -h`
+
+## Helper Scripts
+
+The `scripts` directory contains several helper scripts to manage the application on the Raspberry Pi:
+
+### Initial Setup
+
+1. Copy the environment configuration:
+```bash
+cp scripts/env.example .env
+```
+
+2. Edit `.env` with your Raspberry Pi details:
+```bash
+# SSH Configuration
+RPI_HOST=raspberrypizero.local
+RPI_USER=adam
+RPI_PORT=22
+RPI_APP_DIR=/home/adam/pet-monitor
+```
+
+### Available Scripts
+
+1. **deploy.sh** - Deploy changes to Raspberry Pi
+```bash
+cd scripts
+./deploy.sh
+```
+- Syncs files to Raspberry Pi (excluding .git, venv, etc.)
+- Updates Python dependencies
+- Restarts the service
+
+2. **logs.sh** - View service logs
+```bash
+cd scripts
+./logs.sh [OPTIONS]
+```
+Options:
+- `-f, --follow`: Follow log output
+- `-n N, --lines N`: Show last N lines
+- `-b, --boot`: Show logs since last boot
+- `-h, --help`: Show help message
+
+3. **status.sh** - Check service status and system resources
+```bash
+cd scripts
+./status.sh [OPTIONS]
+```
+Options:
+- `-a, --all`: Show all status information
+- `-s, --service`: Show only service status (default)
+- `-r, --resources`: Show resource usage
+- `-t, --temp`: Show CPU temperature
+- `-h, --help`: Show help message
+
+4. **control.sh** - Control the service
+```bash
+cd scripts
+./control.sh COMMAND
+```
+Commands:
+- `start`: Start the service
+- `stop`: Stop the service
+- `restart`: Restart the service
+- `enable`: Enable service autostart
+- `disable`: Disable service autostart
+
+### Examples
+
+1. Deploy changes and watch logs:
+```bash
+cd scripts
+./deploy.sh && ./logs.sh -f
+```
+
+2. Check system status:
+```bash
+cd scripts
+./status.sh --all
+```
+
+3. Restart service and verify:
+```bash
+cd scripts
+./control.sh restart && ./status.sh
+```
 
 ## License
 

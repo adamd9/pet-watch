@@ -815,13 +815,16 @@
                 deviceSelect.innerHTML = '';
                 devices.forEach(device => {
                     const option = document.createElement('option');
-                    option.value = device.index;
-                    option.textContent = `${device.name} (${device.channels} channels)`;
+                    option.value = device.id;
+                    option.textContent = device.name;
+                    if (device.isDefault) {
+                        option.textContent += ' (Default)';
+                    }
                     deviceSelect.appendChild(option);
                 });
                 
                 // Set current values
-                if (settings.audio_device !== undefined) {
+                if (settings.audio_device) {
                     deviceSelect.value = settings.audio_device;
                 }
                 if (settings.recording_interval !== undefined) {
@@ -880,7 +883,7 @@
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({
-                        audio_device: parseInt(audioDevice),
+                        audio_device: audioDevice,
                         recording_interval: parseInt(recordingInterval),
                         recording_enabled: recordingEnabled
                     })
@@ -985,7 +988,8 @@
                 const li = document.createElement('li');
                 li.className = 'recording-item';
                 
-                const startTime = new Date(recording.timestamp.replace(' ', 'T'));
+                // Parse timestamp, which is in ISO format
+                const startTime = new Date(recording.timestamp);
                 const endTime = new Date(startTime.getTime() + (recording.duration * 1000));
                 
                 const formatTime = (date) => {
