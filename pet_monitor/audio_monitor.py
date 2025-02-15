@@ -15,6 +15,8 @@ import wave
 from flask import Flask, jsonify, send_file, request, render_template, send_from_directory
 import threading
 import re
+import queue
+import lameenc
 
 # Set up logging
 logging.basicConfig(
@@ -30,6 +32,12 @@ logger = logging.getLogger(__name__)
 class Settings:
     def __init__(self, settings_file):
         self.settings_file = settings_file
+        self.default_settings = {
+            'recording_enabled': True,
+            'recording_interval': 10,  # minutes
+            'audio_device': None,  # Will be auto-detected
+            'retention_hours': 48  # Default to 48 hours retention
+        }
         self.settings = self.load_settings()
     
     def load_settings(self):
@@ -38,13 +46,13 @@ class Settings:
                 with open(self.settings_file, 'r') as f:
                     return json.load(f)
             else:
-                settings = self.get_default_settings()
+                settings = self.default_settings
                 self.settings = settings  # Set settings before saving
                 self.save_settings()  # Save default settings
                 return settings
         except Exception as e:
             logger.error(f"Error loading settings: {str(e)}")
-            settings = self.get_default_settings()
+            settings = self.default_settings
             self.settings = settings
             self.save_settings()
             return settings
@@ -56,13 +64,13 @@ class Settings:
         except Exception as e:
             logger.error(f"Error saving settings: {str(e)}")
     
-    def get_default_settings(self):
-        return {
-            'audio_device': None,  # Will be set to first available device
-            'recording_interval': 10,  # minutes
-            'last_known_devices': [],  # List of previously seen devices
-            'recording_enabled': True  # Enable/disable recording
-        }
+    def get_retention_options(self):
+        """Get available retention period options"""
+        return [
+            {'value': 24, 'label': '24 hours'},
+            {'value': 48, 'label': '48 hours'},
+            {'value': 72, 'label': '72 hours'}
+        ]
     
     def update_settings(self, new_settings):
         self.settings.update(new_settings)
@@ -119,6 +127,12 @@ class LevelDB:
                 self.levels[filename]['duration'] = duration
             self.save_db()
 
+    def remove_level(self, filename):
+        """Remove a recording from the level database"""
+        if filename in self.levels:
+            del self.levels[filename]
+            self.save_db()
+
 class FileChangeHandler(FileSystemEventHandler):
     def __init__(self, restart_callback):
         self.restart_callback = restart_callback
@@ -156,12 +170,23 @@ class AudioMonitor:
         self.device = self.settings.settings['audio_device'] or "hw:1,0"  # Use settings device or fallback
         self.period_size = 1024
         
+        # Initialize MP3 encoder with good quality settings
+        self.encoder = lameenc.Encoder()
+        self.encoder.set_bit_rate(128)  # 128kbps is good quality for voice
+        self.encoder.set_in_sample_rate(self.sample_rate)
+        self.encoder.set_channels(self.channels)
+        self.encoder.set_quality(2)    # Quality range: 0 (best) to 9 (worst)
+        
         # Initialize state
         self.running = False
         self.current_recording = None
         self.current_recording_start = None
         self.recordings = []
         self.load_existing_recordings()
+        
+        # Initialize processing queue and worker thread
+        self.processing_queue = queue.Queue()
+        self.worker_thread = None
         
         # Register signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self.signal_handler)
@@ -171,93 +196,184 @@ class AudioMonitor:
         if self.settings.settings['recording_enabled']:
             self.start()
 
-    def get_available_devices(self):
-        """Get list of available audio input devices"""
+    def check_disk_space(self, required_mb=100):
+        """Check if there's enough disk space available"""
         try:
-            devices = alsaaudio.pcms(alsaaudio.PCM_CAPTURE)
-            logger.info(f"Found {len(devices)} input devices")
-            for device in devices:
-                logger.info(f"Found device: {device}")
-            return devices
+            st = os.statvfs(self.audio_output_dir)
+            free_mb = (st.f_bavail * st.f_frsize) / (1024 * 1024)
+            return free_mb >= required_mb
         except Exception as e:
-            logger.error(f"Error getting audio devices: {str(e)}")
-            return []
+            logger.error(f"Error checking disk space: {str(e)}")
+            return False
 
-    def select_audio_device(self):
-        """Select the audio device to use"""
+    def cleanup_old_recordings(self):
+        """Remove recordings older than the retention period"""
         try:
-            # Always use the USB audio device (hw:1,0) as we know it works
-            logger.info(f"Using USB audio device: {self.device}")
-            return self.device
+            retention_hours = self.settings.settings['retention_hours']
+            cutoff_time = datetime.datetime.now() - datetime.timedelta(hours=retention_hours)
+            
+            # List all MP3 files
+            mp3_files = glob.glob(os.path.join(self.audio_output_dir, "recording_*.mp3"))
+            deleted_count = 0
+            freed_space = 0
+            
+            for mp3_file in mp3_files:
+                try:
+                    # Extract timestamp from filename
+                    filename = os.path.basename(mp3_file)
+                    timestamp_str = filename.replace("recording_", "").replace(".mp3", "")
+                    timestamp = datetime.datetime.strptime(timestamp_str, "%Y-%m-%dT%H-%M-%S")
+                    
+                    if timestamp < cutoff_time:
+                        # Get file size before deleting
+                        try:
+                            size = os.path.getsize(mp3_file)
+                        except:
+                            size = 0
+                            
+                        try:
+                            os.remove(mp3_file)
+                            deleted_count += 1
+                            freed_space += size
+                            logger.info(f"Deleted old recording: {filename}")
+                            
+                            # Also remove from level database
+                            self.level_db.remove_level(filename)
+                        except Exception as e:
+                            logger.error(f"Error deleting {filename}: {str(e)}")
+                            
+                except Exception as e:
+                    logger.error(f"Error processing {mp3_file}: {str(e)}")
+                    continue
+            
+            if deleted_count > 0:
+                logger.info(f"Cleanup complete: deleted {deleted_count} files, freed {freed_space / (1024*1024):.1f}MB")
+            
+            return deleted_count, freed_space
             
         except Exception as e:
-            logger.error(f"Error selecting audio device: {str(e)}")
-            return None
+            logger.error(f"Error in cleanup: {str(e)}")
+            return 0, 0
 
-    def update_settings(self, new_settings):
-        restart_required = False
-        
-        if 'audio_device' in new_settings:
-            old_device = self.settings.settings['audio_device']
-            if new_settings['audio_device'] != old_device:
-                restart_required = True
-                self.device = new_settings['audio_device']  # Update device immediately
-        
-        if 'recording_interval' in new_settings:
-            old_interval = self.settings.settings['recording_interval']
-            if new_settings['recording_interval'] != old_interval:
-                restart_required = True
-                self.chunk_duration_minutes = new_settings['recording_interval']
-                self.chunk_duration_seconds = self.chunk_duration_minutes * 60
-        
-        if 'recording_enabled' in new_settings:
-            old_enabled = self.settings.settings['recording_enabled']
-            if new_settings['recording_enabled'] != old_enabled:
-                if new_settings['recording_enabled']:
-                    self.start()
-                else:
-                    self.stop()
-        
-        # Update settings
-        self.settings.update_settings(new_settings)
-        
-        return restart_required
+    def process_recording_worker(self):
+        """Worker thread to process recordings asynchronously"""
+        while self.running or not self.processing_queue.empty():
+            try:
+                # Get the next recording to process with a timeout
+                try:
+                    recording_data = self.processing_queue.get(timeout=1)
+                except queue.Empty:
+                    continue
+
+                audio_data, timestamp = recording_data
+                
+                try:
+                    # Check disk space before writing
+                    if not self.check_disk_space(required_mb=100):
+                        # Try to free up space
+                        deleted_count, freed_space = self.cleanup_old_recordings()
+                        if not self.check_disk_space(required_mb=100):
+                            logger.error("Not enough disk space to write recording, even after cleanup")
+                            self.processing_queue.task_done()
+                            continue
+                    
+                    # Generate filename
+                    filename = f"recording_{timestamp.strftime('%Y-%m-%dT%H-%M-%S')}.mp3"
+                    filepath = os.path.join(self.audio_output_dir, filename)
+                    
+                    # Convert to MP3 and save
+                    try:
+                        # Encode to MP3
+                        mp3_data = self.encoder.encode(audio_data)
+                        mp3_data += self.encoder.flush()  # Get the last few frames
+                        
+                        # Write MP3 file
+                        with open(filepath, 'wb') as f:
+                            f.write(mp3_data)
+                        
+                        logger.info(f"Saved recording to {filepath}")
+                        
+                        # Calculate levels
+                        levels = self.calculate_audio_levels(audio_data)
+                        overall_level = float(np.mean(levels))
+                        
+                        # Store recording info
+                        recording_info = {
+                            'filename': filename,
+                            'timestamp': timestamp.isoformat(),
+                            'duration': self.chunk_duration_seconds,
+                            'level': overall_level,
+                            'detailed_levels': levels
+                        }
+                        
+                        # Save recording info
+                        self.save_recording_info(recording_info)
+                        
+                        # Add to level database
+                        self.level_db.add_level(
+                            filename,
+                            timestamp.isoformat(),
+                            overall_level,
+                            levels,
+                            self.chunk_duration_seconds
+                        )
+                        
+                        logger.info(f"Finished processing recording {filename}")
+                    except Exception as e:
+                        logger.error(f"Error encoding MP3: {str(e)}")
+                        raise
+                        
+                except Exception as e:
+                    logger.error(f"Error processing recording: {str(e)}")
+                
+                self.processing_queue.task_done()
+                
+            except Exception as e:
+                logger.error(f"Error in worker thread: {str(e)}")
+                time.sleep(1)
+
+    def start_monitoring(self):
+        """Start the audio monitoring loop"""
+        logger.info("Starting audio monitoring")
+        try:
+            while self.running:
+                if self.device is None:
+                    logger.warning("No audio device available, retrying in 5 seconds...")
+                    time.sleep(5)
+                    self.device = self.select_audio_device()
+                    continue
+                
+                try:
+                    # Check disk space before starting new recording
+                    if not self.check_disk_space(required_mb=100):
+                        # Try to free up space
+                        deleted_count, freed_space = self.cleanup_old_recordings()
+                        if not self.check_disk_space(required_mb=100):
+                            logger.error("Not enough disk space for new recording, waiting...")
+                            time.sleep(60)  # Wait a minute before retrying
+                            continue
+                    
+                    # Record start time
+                    start_time = time.time()
+                    
+                    # Record one chunk (10 minutes)
+                    logger.info("Starting new recording...")
+                    self.record_chunk()
+                    
+                    # Calculate recording time
+                    recording_time = time.time() - start_time
+                    logger.info(f"Recording completed in {recording_time:.2f} seconds")
+                    
+                    # Brief pause before next recording
+                    if self.running:
+                        time.sleep(1)
+                except Exception as e:
+                    logger.error(f"Error in recording loop: {str(e)}")
+                    time.sleep(1)  # Wait before retrying
+        except Exception as e:
+            logger.error(f"Error in monitoring loop: {str(e)}")
+            self.running = False
     
-    def calculate_audio_levels(self, audio_data, num_segments=100):
-        """Calculate audio levels for multiple segments of the recording"""
-        # Convert to mono if stereo
-        if len(audio_data.shape) > 1 and audio_data.shape[1] > 1:
-            audio_data = np.mean(audio_data, axis=1)
-        
-        # Normalize to float in range [-1, 1]
-        audio_data = audio_data.astype(np.float32) / 32768.0
-        
-        # Split into segments
-        segment_size = len(audio_data) // num_segments
-        if segment_size == 0:
-            segment_size = 1
-        segments = np.array_split(audio_data, num_segments)
-        
-        levels = []
-        for segment in segments:
-            # Calculate RMS (root mean square)
-            rms = np.sqrt(np.mean(np.square(segment)))
-            
-            # Convert to decibels relative to full scale (dBFS)
-            if rms > 0:
-                dbfs = 20 * np.log10(rms)
-            else:
-                dbfs = -96  # Noise floor
-            
-            # Normalize to 0-1 range
-            # Map -60 dBFS (quiet) to 0 and 0 dBFS (max) to 1
-            normalized = (dbfs + 60) / 60
-            normalized = np.clip(normalized, 0, 1)
-            
-            levels.append(float(normalized))
-        
-        return levels
-
     def record_chunk(self):
         """Record a chunk of audio"""
         try:
@@ -292,44 +408,10 @@ class AudioMonitor:
             # Convert to numpy array
             audio_data = np.frombuffer(b''.join(frames), dtype=np.int16)
             
-            # Save the recording
+            # Queue the recording for processing
             timestamp = datetime.datetime.now()
-            filename = f"recording_{timestamp.strftime('%Y-%m-%dT%H-%M-%S')}.wav"
-            filepath = os.path.join(self.audio_output_dir, filename)
-            
-            # Save as WAV file
-            with wave.open(filepath, 'wb') as w:
-                w.setnchannels(self.channels)
-                w.setsampwidth(2)  # 2 bytes for S16_LE format
-                w.setframerate(self.sample_rate)
-                w.writeframes(audio_data.tobytes())
-            
-            logger.info(f"Saved recording to {filepath}")
-            
-            # Calculate levels
-            levels = self.calculate_audio_levels(audio_data)
-            overall_level = float(np.mean(levels))
-            
-            # Store recording info
-            recording_info = {
-                'filename': filename,
-                'timestamp': timestamp.isoformat(),
-                'duration': self.chunk_duration_seconds,
-                'level': overall_level,
-                'detailed_levels': levels
-            }
-            
-            # Save recording info
-            self.save_recording_info(recording_info)
-            
-            # Add to level database
-            self.level_db.add_level(
-                filename,
-                timestamp.isoformat(),
-                overall_level,
-                levels,
-                self.chunk_duration_seconds
-            )
+            self.processing_queue.put((audio_data, timestamp))
+            logger.info(f"Queued recording for processing at {timestamp}")
             
         except Exception as e:
             logger.error(f"Error recording chunk: {str(e)}")
@@ -337,7 +419,7 @@ class AudioMonitor:
     def load_existing_recordings(self):
         """Load existing recordings from directory"""
         for filename in os.listdir(self.audio_output_dir):
-            if filename.endswith(".wav"):
+            if filename.endswith(".mp3"):
                 try:
                     match = re.search(r'audio_(\d{8}_\d{6})', filename)
                     if not match:
@@ -346,7 +428,7 @@ class AudioMonitor:
                     dt = datetime.datetime.strptime(timestamp_str, "%Y%m%d_%H%M%S")
                     
                     # Try to load levels from corresponding JSON file
-                    levels_filename = filename.replace(".wav", ".levels.json")
+                    levels_filename = filename.replace(".mp3", ".levels.json")
                     levels_filepath = os.path.join(self.audio_output_dir, levels_filename)
                     levels = []
                     if os.path.exists(levels_filepath):
@@ -367,30 +449,14 @@ class AudioMonitor:
                     logger.error(f"Error parsing timestamp from filename {filename}: {str(e)}")
                     continue
 
-    def start_monitoring(self):
-        """Start the audio monitoring loop"""
-        logger.info("Starting audio monitoring")
-        try:
-            while self.running:
-                if self.device is None:
-                    logger.warning("No audio device available, retrying in 5 seconds...")
-                    time.sleep(5)
-                    self.device = self.select_audio_device()
-                    continue
-                
-                try:
-                    self.record_chunk()
-                except Exception as e:
-                    logger.error(f"Error in recording loop: {str(e)}")
-                    time.sleep(1)  # Wait before retrying
-        except Exception as e:
-            logger.error(f"Error in monitoring loop: {str(e)}")
-            self.running = False
-    
     def start(self):
         """Start audio monitoring in a new thread"""
         if not self.running:
             self.running = True
+            
+            # Start the worker thread
+            self.worker_thread = threading.Thread(target=self.process_recording_worker, daemon=True)
+            self.worker_thread.start()
             
             # Initialize current recording
             timestamp = datetime.datetime.now()
@@ -398,7 +464,7 @@ class AudioMonitor:
             self.current_recording = {
                 'timestamp': timestamp.strftime("%Y-%m-%dT%H:%M:%S"),
                 'status': 'recording',
-                'filename': f'recording_{timestamp.strftime("%Y-%m-%dT%H:%M:%S")}.wav',
+                'filename': f'recording_{timestamp.strftime("%Y-%m-%dT%H-%M-%S")}.mp3',
                 'start_time': timestamp.strftime("%Y-%m-%dT%H:%M:%S"),
                 'duration': self.chunk_duration_minutes * 60
             }
@@ -406,7 +472,7 @@ class AudioMonitor:
             self.monitor_thread = threading.Thread(target=self.start_monitoring, daemon=True)
             self.monitor_thread.start()
             logger.info("Started audio monitoring")
-    
+
     def stop(self):
         """Stop audio monitoring"""
         if self.running:
@@ -416,9 +482,18 @@ class AudioMonitor:
                     self.monitor_thread.join(timeout=1)  # Wait for thread to finish
                 except TimeoutError:
                     logger.warning("Monitor thread did not stop cleanly")
+            
+            # Wait for processing queue to empty
+            if hasattr(self, 'worker_thread'):
+                try:
+                    self.processing_queue.join()  # Wait for all tasks to complete
+                    self.worker_thread.join(timeout=1)
+                except TimeoutError:
+                    logger.warning("Worker thread did not stop cleanly")
+            
             self.current_recording = None
             logger.info("Stopped audio monitoring")
-    
+
     def cleanup(self):
         """Clean up resources"""
         self.running = False
@@ -460,6 +535,41 @@ class AudioMonitor:
                 json.dump(recordings, f, indent=4)
         except Exception as e:
             logger.error(f"Error saving recording info: {e}")
+
+    def calculate_audio_levels(self, audio_data, num_segments=100):
+        """Calculate audio levels for multiple segments of the recording"""
+        # Convert to mono if stereo
+        if len(audio_data.shape) > 1 and audio_data.shape[1] > 1:
+            audio_data = np.mean(audio_data, axis=1)
+        
+        # Normalize to float in range [-1, 1]
+        audio_data = audio_data.astype(np.float32) / 32768.0
+        
+        # Split into segments
+        segment_size = len(audio_data) // num_segments
+        if segment_size == 0:
+            segment_size = 1
+        segments = np.array_split(audio_data, num_segments)
+        
+        levels = []
+        for segment in segments:
+            # Calculate RMS (root mean square)
+            rms = np.sqrt(np.mean(np.square(segment)))
+            
+            # Convert to decibels relative to full scale (dBFS)
+            if rms > 0:
+                dbfs = 20 * np.log10(rms)
+            else:
+                dbfs = -96  # Noise floor
+            
+            # Normalize to 0-1 range
+            # Map -60 dBFS (quiet) to 0 and 0 dBFS (max) to 1
+            normalized = (dbfs + 60) / 60
+            normalized = np.clip(normalized, 0, 1)
+            
+            levels.append(float(normalized))
+        
+        return levels
 
 # Create global monitor instance
 monitor = None
@@ -532,7 +642,7 @@ def serve_recording(filename):
         
     # Check if requesting levels data
     if filename.endswith('.levels.json'):
-        audio_filename = filename.replace('.levels.json', '.wav')
+        audio_filename = filename.replace('.levels.json', '.mp3')
         try:
             # Load audio file and analyze
             import wave
@@ -710,8 +820,10 @@ def get_settings():
             'recording_enabled': settings['recording_enabled'],
             'audio_device': settings['audio_device'],
             'recording_interval': settings['recording_interval'],
+            'retention_hours': settings['retention_hours'],
             'available_devices': available_devices,
-            'last_known_devices': settings['last_known_devices']
+            'last_known_devices': settings['last_known_devices'],
+            'retention_options': monitor.settings.get_retention_options()
         })
     except Exception as e:
         logger.error(f"Error getting settings: {str(e)}")

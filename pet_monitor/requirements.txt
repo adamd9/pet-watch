@@ -3,3 +3,4 @@ numpy>=1.24.0
 pyalsaaudio>=0.10.0
 scipy>=1.11.0
 watchdog>=3.0.0
+lameenc>=1.5.0

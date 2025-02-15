@@ -48,12 +48,21 @@ A lightweight Python-based pet audio monitoring application designed for low-pow
 - Stores both overall and detailed level data for each recording
 - Normalizes audio levels for consistent visualization
 - Uses efficient numpy-based audio processing
+- Recording filenames use the format `recording_YYYY-MM-DDTHH-MM-SS.wav` where the timestamp represents the start time of the recording
+- Each recording is followed by a 30-second cooldown period to allow for file writing and resource cleanup
+- A 10-minute recording will contain exactly 10 minutes of audio data, with additional time needed for processing
 
 ### Data Storage
-- Audio files stored as WAV format
+- Audio files stored as MP3 format (128kbps VBR, optimized for voice)
 - Detailed level data stored in JSON format
 - Efficient level database for quick timeline access
-- Automatic cleanup of old recordings
+- Automatic cleanup of old recordings based on retention period
+- Configurable retention period (24, 48, or 72 hours)
+- Smart disk space management:
+  - Monitors available disk space
+  - Requires minimum 100MB free space for new recordings
+  - Automatically cleans up old recordings when space is low
+  - Gracefully handles disk full conditions
 
 ### User Interface
 - Timeline shows fixed 24-hour view of current day
@@ -566,6 +575,7 @@ Response:
    - Settings (click gear icon):
      - Audio Input Device: Select from available devices
      - Recording Interval: Choose 1-60 minutes
+     - Data Retention: Set retention period (24, 48, or 72 hours)
    - Current recording status and progress
    - Live audio level visualization
    - List of completed recordings with playback controls
@@ -575,48 +585,22 @@ Response:
 
 The application includes persistent settings that can be configured through the web interface:
 
-1. **Audio Input Device**
-   - Select from a list of available audio input devices
-   - Previously used devices that become unavailable are shown in gray
-   - Automatically falls back to an available device if selected device is disconnected
-   - Changes take effect after automatic restart
+1. **Recording Settings**
+   - Recording Interval: Duration of each recording (1-60 minutes)
+   - Recording Status: Enable/disable recording
+   - Audio Device: Select input device
 
-2. **Recording Interval**
-   - Choose how long each recording chunk should be
-   - Options: 1, 5, 10, 15, 30, or 60 minutes
-   - Changes take effect after automatic restart
+2. **Data Retention**
+   - Retention Period: How long to keep recordings (24, 48, or 72 hours)
+   - Automatic cleanup of recordings older than retention period
+   - Disk space management to prevent running out of space
 
-Settings are stored in `recordings/audio/settings.json` and persist between application restarts.
-
-### Daily Timeline View
-
-The timeline provides a comprehensive view of audio activity:
-
-1. **Time Display**
-   - Shows full 24-hour period for each day
-   - Hour markers on horizontal axis
-   - Current day always shown at top
-   - Previous days shown below in reverse chronological order
-
-2. **Audio Levels**
-   - Vertical axis shows audio intensity
-   - Gaps or zero levels indicate periods of silence
-   - Higher levels indicate more audio activity
-
-3. **Interaction**
-   - Hover over any point to see exact time and audio level
-   - Points with recordings show "Click to play" in tooltip
-   - Click a point to play its associated recording
-   - Timeline updates automatically every minute
-
-### Audio Level Visualization
-
-The application uses a decibel-based scale for audio levels:
-- Very quiet sounds (-60 dB) appear as short bars
-- Normal sounds (-30 dB) appear as medium bars
-- Loud sounds (0 dB) appear as tall bars
-- Levels are normalized to ensure consistent visualization
-- Each recording stores one level measurement per second
+3. **Audio Configuration**
+   - Sample Rate: 48000 Hz
+   - Format: S16_LE (16-bit signed little-endian)
+   - Channels: 1 (mono)
+   - Device: hw:1,0 (USB audio device)
+   - Period Size: 1024
 
 ## Audio Device Configuration
 
@@ -634,9 +618,9 @@ If you encounter audio issues:
 
 ## Audio File Format
 Files must follow naming convention:
-`recording_YYYY-MM-DD_HH-MM-SS.wav`
+`recording_YYYY-MM-DDTHH-MM-SS.wav`
 
-Example: `recording_2025-02-12_09-51-54.wav`
+Example: `recording_2025-02-12T09-51-54.wav`
 
 ## Performance Optimizations
 
